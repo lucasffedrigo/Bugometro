@@ -91,6 +91,7 @@ class BugVoiceReporterApp:
                 silence_threshold=self.config.silence_threshold,
                 silence_timeout_seconds=self.config.silence_timeout_seconds,
             ),
+            auto_stop_on_silence=self.config.auto_stop_on_silence,
             temp_file_factory=self.storage.create_temp_wav_path,
             logger=self.logger,
             on_speech_started=self._on_speech_started,

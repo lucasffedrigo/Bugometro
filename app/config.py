@@ -23,6 +23,7 @@ class AppConfig:
     block_duration_ms: int
     silence_threshold: float
     silence_timeout_seconds: float
+    auto_stop_on_silence: bool
     max_recording_seconds: float
     transcription_provider: str
     formatter_provider: str
@@ -63,6 +64,9 @@ class AppConfig:
             block_duration_ms=int(os.getenv("AUDIO_BLOCK_DURATION_MS", "200")),
             silence_threshold=float(os.getenv("SILENCE_THRESHOLD", "0.015")),
             silence_timeout_seconds=float(os.getenv("SILENCE_TIMEOUT_SECONDS", "10")),
+            auto_stop_on_silence=_as_bool(
+                os.getenv("AUTO_STOP_ON_SILENCE", "false")
+            ),
             max_recording_seconds=float(os.getenv("MAX_RECORDING_SECONDS", "180")),
             transcription_provider=os.getenv("TRANSCRIPTION_PROVIDER", "gemini").strip().lower(),
             formatter_provider=os.getenv("FORMATTER_PROVIDER", "gemini").strip().lower(),

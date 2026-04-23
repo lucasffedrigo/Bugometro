@@ -38,6 +38,7 @@ class AudioRecorder:
         block_size: int,
         max_recording_seconds: float,
         silence_detector: SilenceDetector,
+        auto_stop_on_silence: bool,
         temp_file_factory: Callable[[], Path],
         logger: logging.Logger,
         on_speech_started: Callable[[], None] | None = None,
@@ -48,6 +49,7 @@ class AudioRecorder:
         self.block_size = block_size
         self.max_recording_seconds = max_recording_seconds
         self.silence_detector = silence_detector
+        self.auto_stop_on_silence = auto_stop_on_silence
         self.temp_file_factory = temp_file_factory
         self.logger = logger
         self.on_speech_started = on_speech_started
@@ -152,7 +154,7 @@ class AudioRecorder:
         for event in events:
             if event == SilenceEvent.SPEECH_STARTED and self.on_speech_started is not None:
                 self.on_speech_started()
-            elif event == SilenceEvent.SILENCE_TIMEOUT:
+            elif event == SilenceEvent.SILENCE_TIMEOUT and self.auto_stop_on_silence:
                 self._stop_reason = RecorderStopReason.SILENCE
                 self._stop_event.set()
                 raise sd.CallbackStop

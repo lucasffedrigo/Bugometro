@@ -11,7 +11,7 @@ Fluxo principal:
 1. Pressione `Ctrl+Tab`
 2. Fale livremente o relato
 3. Pressione `Ctrl+Tab` novamente para encerrar manualmente
-4. Ou aguarde 10 segundos contínuos de silêncio após a primeira fala
+4. O modal inicial some sozinho após 10 segundos, mas a gravação continua
 5. O áudio é enviado ao provedor configurado para transcrição
 6. A transcrição vira um bug report estruturado
 7. O texto final é copiado para o clipboard
@@ -72,6 +72,7 @@ Flags úteis:
 
 - `SAVE_LAST_OUTPUT=false`: não grava `last_output.txt` por padrão
 - `DEBUG_SAVE_TRANSCRIPTION=false`: não grava `last_transcription.txt` por padrão
+- `AUTO_STOP_ON_SILENCE=false`: mantém a gravação ativa mesmo após silêncio; o encerramento padrão é manual pela hotkey
 - `CLIPBOARD_CLEAR_SECONDS=120`: limpa o conteúdo copiado automaticamente após 120 segundos, desde que você não tenha copiado outra coisa depois
 - `LOG_TO_FILE=false`: evita criar `bug_voice_reporter.log` por padrão
 
@@ -86,6 +87,7 @@ python -m app.main
 - `Ctrl+Tab` inicia a gravação
 - `Ctrl+Tab` encerra a gravação e inicia o processamento
 - `Ctrl+Caps Lock` descarta o áudio atual e reinicia a gravação em 5 segundos
+- O HUD de instrução fecha em até 10 segundos sem encerrar a gravação
 - Não existe mais modal de configuração
 
 ## Bandeja Do Sistema
