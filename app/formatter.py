@@ -4,6 +4,7 @@ from pathlib import Path
 
 import requests
 
+from app.bugreel_context import BugReelContext, EnrichedBugReelContext
 from app.context_extractor import ContextExtractor
 from app.gemini_utils import extract_text_from_response_json, format_gemini_http_error
 from app.openai_utils import (
@@ -39,9 +40,14 @@ class Formatter:
     def load_prompt_template(self) -> str:
         return self.prompt_path.read_text(encoding="utf-8")
 
-    def render_prompt(self, transcription: str) -> str:
+    def render_prompt(
+        self,
+        transcription: str,
+        bugreel_context: BugReelContext | EnrichedBugReelContext | None = None,
+    ) -> str:
         if not transcription or not transcription.strip():
             raise FormattingError("A transcrição está vazia; não há conteúdo para formatar.")
+
         template = self.load_prompt_template()
         prompt = template.replace("{{TRANSCRICAO}}", transcription.strip())
         context_block = ContextExtractor.extract(transcription).to_prompt_block()
@@ -51,13 +57,23 @@ class Formatter:
                 "Use apenas se estiver consistente com o relato:\n"
                 f"{context_block}"
             )
+        if bugreel_context is not None:
+            prompt += (
+                "\n\nContexto adicional do BugReel:\n"
+                f"{bugreel_context.to_prompt_block()}"
+            )
         return prompt
 
-    def format_bug_report(self, transcription: str) -> str:
-        prompt = self.render_prompt(transcription)
+    def format_bug_report(
+        self,
+        transcription: str,
+        bugreel_context: BugReelContext | EnrichedBugReelContext | None = None,
+    ) -> str:
+        prompt = self.render_prompt(transcription, bugreel_context=bugreel_context)
         content = self._generate_text(prompt, "a formatação do bug report")
         missing = validate_bug_report(content)
         warnings = validate_bug_report_warnings(content)
+
         if missing or warnings:
             repair_prompt = (
                 "Corrija o bug report abaixo para obedecer ao formato desejado. "
@@ -69,7 +85,15 @@ class Formatter:
                 f"Pendências impeditivas: {', '.join(missing) or 'nenhuma'}\n"
                 f"Ajustes desejados: {', '.join(warnings) or 'nenhum'}"
             )
+            if bugreel_context is not None:
+                repair_prompt += (
+                    "\n\nMantenha o link do BugReel dentro de Evidências e cite que "
+                    "o vídeo está disponível no relatório privado:\n"
+                    f"{bugreel_context.url}"
+                )
             content = self._generate_text(repair_prompt, "o reparo do bug report")
+
+        content = self._inject_bugreel_evidence(content, bugreel_context)
         missing = validate_bug_report(content)
         if missing:
             raise FormattingError(
@@ -190,3 +214,75 @@ class Formatter:
             return str(output_text).strip()
 
         return ""
+
+    @staticmethod
+    def _inject_bugreel_evidence(
+        content: str,
+        bugreel_context: BugReelContext | EnrichedBugReelContext | None,
+    ) -> str:
+        if bugreel_context is None:
+            return content.strip()
+
+        lines = content.strip().splitlines()
+        evidence_index: int | None = None
+        for index, line in enumerate(lines):
+            normalized = line.strip().lower().replace("*", "")
+            if normalized in {"evidencia:", "evidência:", "evidencias:", "evidências:"}:
+                evidence_index = index
+                break
+
+        if evidence_index is None:
+            return content.strip()
+
+        evidence_lines = bugreel_context.evidence_lines()
+        next_section_index = len(lines)
+        for index in range(evidence_index + 1, len(lines)):
+            stripped = lines[index].strip()
+            normalized = stripped.lower().replace("*", "")
+            if not stripped:
+                continue
+            if stripped.startswith("- ") or stripped.startswith("* "):
+                continue
+            if stripped[:2].isdigit() and stripped[1:2] in {".", ")"}:
+                continue
+            if normalized.endswith(":"):
+                next_section_index = index
+                break
+
+        existing_lines = lines[evidence_index + 1 : next_section_index]
+        trailing_lines = lines[next_section_index:]
+        existing_lines = Formatter._sanitize_evidence_lines(existing_lines)
+        existing_block = "\n".join(existing_lines).strip()
+        if all(item in existing_block for item in evidence_lines):
+            return content.strip()
+
+        additions = [f"- {item}" for item in evidence_lines if item not in existing_block]
+
+        if not existing_block or existing_block.lower() in {"não informado", "nao informado"}:
+            merged_lines = additions
+        else:
+            merged_lines = existing_lines + additions
+
+        rebuilt = lines[: evidence_index + 1] + merged_lines + trailing_lines
+        return "\n".join(rebuilt).strip()
+
+    @staticmethod
+    def _sanitize_evidence_lines(lines: list[str]) -> list[str]:
+        blocked_tokens = (
+            "appdata\\local\\temp",
+            "bug_voice_reporter_bugreel",
+            "pacote local de evid",
+            "arquivos locais",
+            "vídeo bugreel:",
+            "video bugreel:",
+            "/api/recordings/",
+            "relatório bugreel:",
+            "relatorio bugreel:",
+        )
+        cleaned: list[str] = []
+        for line in lines:
+            lowered = line.lower()
+            if any(token in lowered for token in blocked_tokens):
+                continue
+            cleaned.append(line)
+        return cleaned

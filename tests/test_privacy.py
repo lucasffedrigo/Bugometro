@@ -79,3 +79,38 @@ def test_clipboard_auto_clear_removes_own_content(monkeypatch) -> None:
 
     assert clipboard_state["value"] == ""
     clipboard.stop()
+
+
+def test_clipboard_copy_files_requires_valid_paths(tmp_path: Path) -> None:
+    clipboard = ClipboardService(clear_after_seconds=1)
+    missing = tmp_path / "missing.webm"
+    try:
+        try:
+            clipboard.copy_files([missing])
+            assert False, "expected ValueError"
+        except ValueError:
+            pass
+    finally:
+        clipboard.stop()
+
+
+def test_clipboard_copy_files_uses_windows_transport(monkeypatch, tmp_path: Path) -> None:
+    copied: dict[str, object] = {}
+    video = tmp_path / "video.webm"
+    video.write_bytes(b"1")
+
+    def fake_copy_windows_files(paths):
+        copied["paths"] = paths
+        return True
+
+    monkeypatch.setattr(
+        "app.clipboard.ClipboardService._copy_windows_files",
+        staticmethod(fake_copy_windows_files),
+    )
+
+    clipboard = ClipboardService(clear_after_seconds=1)
+    try:
+        clipboard.copy_files([video])
+        assert copied["paths"] == [video]
+    finally:
+        clipboard.stop()

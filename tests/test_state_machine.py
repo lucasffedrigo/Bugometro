@@ -17,11 +17,24 @@ def test_happy_path_transitions() -> None:
     assert state.current == AppStatus.IDLE
 
 
+def test_bugreel_processing_path_transitions() -> None:
+    state = StateMachine()
+
+    state.transition(AppStatus.AWAITING_BUGREEL_UPLOAD)
+    state.transition(AppStatus.AWAITING_BUGREEL_PUBLICATION)
+    state.transition(AppStatus.PROCESSING_BUGREEL_ASSETS)
+    state.transition(AppStatus.PROCESSING_BUGREEL_FALLBACK)
+    state.transition(AppStatus.PROCESSING_FORMATTING)
+    state.transition(AppStatus.COPIED)
+
+    assert state.current == AppStatus.COPIED
+
+
 def test_invalid_transition_raises() -> None:
     state = StateMachine()
 
     with pytest.raises(ValueError):
-        state.transition(AppStatus.PROCESSING_FORMATTING)
+        state.transition(AppStatus.COPIED)
 
 
 def test_error_state_can_reset() -> None:

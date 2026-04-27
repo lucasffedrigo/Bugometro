@@ -16,6 +16,23 @@ class AppConfig:
     log_file_path: Path
     hotkey: str
     restart_hotkey: str
+    bugreel_hotkey: str
+    video_attach_hotkey: str
+    bugreel_auto_trigger: bool
+    bugreel_command_hotkey: str
+    bugreel_auto_focus_chrome: bool
+    bugreel_boot_url: str
+    bugreel_trigger_delay_seconds: float
+    bugreel_auto_start_container: bool
+    bugreel_compose_dir: str
+    bugreel_start_timeout_seconds: float
+    bugreel_base_url: str
+    bugreel_api_token: str
+    bugreel_timeout_seconds: float
+    bugreel_capture_timeout_seconds: float
+    bugreel_start_confirmation_seconds: float
+    bugreel_download_evidence: bool
+    bugreel_frame_limit: int
     hotkey_debounce_ms: int
     restart_delay_seconds: int
     sample_rate: int
@@ -38,6 +55,7 @@ class AppConfig:
     debug_save_transcription: bool
     save_last_output: bool
     clipboard_clear_seconds: int
+    clipboard_include_files: bool
     log_to_file: bool
 
     @property
@@ -57,6 +75,47 @@ class AppConfig:
             log_file_path=root / "bug_voice_reporter.log",
             hotkey=os.getenv("APP_HOTKEY", "ctrl+tab"),
             restart_hotkey=os.getenv("APP_RESTART_HOTKEY", "ctrl+caps lock"),
+            bugreel_hotkey=os.getenv("APP_BUGREEL_HOTKEY", "ctrl+f3"),
+            video_attach_hotkey=os.getenv(
+                "APP_VIDEO_ATTACH_HOTKEY", "ctrl+shift+v"
+            ),
+            bugreel_auto_trigger=_as_bool(
+                os.getenv("BUGREEL_AUTO_TRIGGER", "true")
+            ),
+            bugreel_command_hotkey=os.getenv(
+                "BUGREEL_COMMAND_HOTKEY", "alt+shift+r"
+            ).strip(),
+            bugreel_auto_focus_chrome=_as_bool(
+                os.getenv("BUGREEL_AUTO_FOCUS_CHROME", "true")
+            ),
+            bugreel_boot_url=os.getenv(
+                "BUGREEL_BOOT_URL", ""
+            ).strip(),
+            bugreel_trigger_delay_seconds=float(
+                os.getenv("BUGREEL_TRIGGER_DELAY_SECONDS", "1.2")
+            ),
+            bugreel_auto_start_container=_as_bool(
+                os.getenv("BUGREEL_AUTO_START_CONTAINER", "true")
+            ),
+            bugreel_compose_dir=os.getenv(
+                "BUGREEL_COMPOSE_DIR", r"C:\Users\lucas\Desktop\bugreel"
+            ).strip(),
+            bugreel_start_timeout_seconds=float(
+                os.getenv("BUGREEL_START_TIMEOUT_SECONDS", "25")
+            ),
+            bugreel_base_url=os.getenv("BUGREEL_BASE_URL", "").strip(),
+            bugreel_api_token=os.getenv("BUGREEL_API_TOKEN", "").strip(),
+            bugreel_timeout_seconds=float(os.getenv("BUGREEL_TIMEOUT_SECONDS", "20")),
+            bugreel_capture_timeout_seconds=float(
+                os.getenv("BUGREEL_CAPTURE_TIMEOUT_SECONDS", "90")
+            ),
+            bugreel_start_confirmation_seconds=float(
+                os.getenv("BUGREEL_START_CONFIRMATION_SECONDS", "12")
+            ),
+            bugreel_download_evidence=_as_bool(
+                os.getenv("BUGREEL_DOWNLOAD_EVIDENCE", "true")
+            ),
+            bugreel_frame_limit=int(os.getenv("BUGREEL_FRAME_LIMIT", "3")),
             hotkey_debounce_ms=int(os.getenv("HOTKEY_DEBOUNCE_MS", "400")),
             restart_delay_seconds=int(os.getenv("RESTART_DELAY_SECONDS", "5")),
             sample_rate=int(os.getenv("AUDIO_SAMPLE_RATE", "16000")),
@@ -98,6 +157,9 @@ class AppConfig:
             ),
             clipboard_clear_seconds=int(
                 os.getenv("CLIPBOARD_CLEAR_SECONDS", "120")
+            ),
+            clipboard_include_files=_as_bool(
+                os.getenv("CLIPBOARD_INCLUDE_FILES", "false")
             ),
             log_to_file=_as_bool(
                 os.getenv("LOG_TO_FILE", "false")

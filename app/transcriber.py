@@ -70,6 +70,7 @@ class Transcriber:
 
     def _request_gemini_transcription(self, audio_path: Path, prompt: str) -> str:
         audio_b64 = base64.b64encode(audio_path.read_bytes()).decode("ascii")
+        mime_type = self._detect_mime_type(audio_path)
         url = (
             f"https://generativelanguage.googleapis.com/v1beta/models/"
             f"{self.model}:generateContent"
@@ -85,7 +86,7 @@ class Transcriber:
                         {"text": prompt},
                         {
                             "inline_data": {
-                                "mime_type": "audio/wav",
+                                "mime_type": mime_type,
                                 "data": audio_b64,
                             }
                         },
@@ -115,6 +116,7 @@ class Transcriber:
 
     def _request_openai_transcription(self, audio_path: Path, prompt: str) -> str:
         url = "https://api.openai.com/v1/audio/transcriptions"
+        mime_type = self._detect_mime_type(audio_path)
         headers = {
             "Authorization": f"Bearer {self.api_key}",
         }
@@ -123,7 +125,7 @@ class Transcriber:
             "prompt": prompt,
         }
         files = {
-            "file": (audio_path.name, audio_path.read_bytes(), "audio/wav"),
+            "file": (audio_path.name, audio_path.read_bytes(), mime_type),
         }
 
         try:
@@ -157,3 +159,16 @@ class Transcriber:
     def _is_silent_marker(text: str) -> bool:
         lowered = text.strip().lower()
         return lowered in {"[silêncio]", "silêncio", "[silencio]", "silencio", "[silence]", "silence", "inaudível", "inaudivel"}
+
+    @staticmethod
+    def _detect_mime_type(audio_path: Path) -> str:
+        suffix = audio_path.suffix.lower()
+        mapping = {
+            ".wav": "audio/wav",
+            ".mp3": "audio/mpeg",
+            ".m4a": "audio/mp4",
+            ".mp4": "audio/mp4",
+            ".webm": "audio/webm",
+            ".ogg": "audio/ogg",
+        }
+        return mapping.get(suffix, "application/octet-stream")

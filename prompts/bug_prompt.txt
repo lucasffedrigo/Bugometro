@@ -40,6 +40,15 @@ Regras para evidência:
 
 Regras para passos:
 - "Passos para reprodução" deve aparecer em negrito
+- Quando o contexto for web e houver URL informada no relato/contexto técnico, inclua a URL explicitamente no passo 1
+- Se houver mais de uma URL, use a mais relevante para reproduzir o problema
+- Se não houver URL válida, mantenha os passos sem inventar endereço
+
+Regras para ambiente:
+- "Informações do ambiente" deve aparecer por último
+- Inclua dispositivo, versão e sistema operacional
+- Quando houver navegador informado, inclua também
+- Se algum dado não estiver presente, escreva "Não informado" no respectivo item
 
 Relato bruto:
 {{TRANSCRICAO}}
@@ -65,3 +74,9 @@ Resumo:
 
 **Evidências:**
 [texto]
+
+**Informações do ambiente:**
+- Dispositivo: [texto]
+- Versão: [texto]
+- Sistema operacional: [texto]
+- Navegador: [texto]
