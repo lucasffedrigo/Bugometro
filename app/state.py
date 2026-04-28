@@ -8,10 +8,6 @@ class AppStatus(str, Enum):
     IDLE = "IDLE"
     RECORDING = "RECORDING"
     SILENCE_COUNTDOWN = "SILENCE_COUNTDOWN"
-    AWAITING_BUGREEL_UPLOAD = "AWAITING_BUGREEL_UPLOAD"
-    AWAITING_BUGREEL_PUBLICATION = "AWAITING_BUGREEL_PUBLICATION"
-    PROCESSING_BUGREEL_ASSETS = "PROCESSING_BUGREEL_ASSETS"
-    PROCESSING_BUGREEL_FALLBACK = "PROCESSING_BUGREEL_FALLBACK"
     PROCESSING_TRANSCRIPTION = "PROCESSING_TRANSCRIPTION"
     PROCESSING_FORMATTING = "PROCESSING_FORMATTING"
     COPIED = "COPIED"
@@ -21,9 +17,7 @@ class AppStatus(str, Enum):
 ALLOWED_TRANSITIONS: dict[AppStatus, set[AppStatus]] = {
     AppStatus.IDLE: {
         AppStatus.RECORDING,
-        AppStatus.AWAITING_BUGREEL_UPLOAD,
-        AppStatus.AWAITING_BUGREEL_PUBLICATION,
-        AppStatus.PROCESSING_BUGREEL_ASSETS,
+        AppStatus.PROCESSING_TRANSCRIPTION,
         AppStatus.PROCESSING_FORMATTING,
         AppStatus.ERROR,
     },
@@ -39,26 +33,6 @@ ALLOWED_TRANSITIONS: dict[AppStatus, set[AppStatus]] = {
         AppStatus.PROCESSING_TRANSCRIPTION,
         AppStatus.ERROR,
     },
-    AppStatus.AWAITING_BUGREEL_UPLOAD: {
-        AppStatus.AWAITING_BUGREEL_PUBLICATION,
-        AppStatus.PROCESSING_BUGREEL_ASSETS,
-        AppStatus.ERROR,
-        AppStatus.IDLE,
-    },
-    AppStatus.AWAITING_BUGREEL_PUBLICATION: {
-        AppStatus.PROCESSING_BUGREEL_ASSETS,
-        AppStatus.ERROR,
-        AppStatus.IDLE,
-    },
-    AppStatus.PROCESSING_BUGREEL_ASSETS: {
-        AppStatus.PROCESSING_BUGREEL_FALLBACK,
-        AppStatus.PROCESSING_FORMATTING,
-        AppStatus.ERROR,
-    },
-    AppStatus.PROCESSING_BUGREEL_FALLBACK: {
-        AppStatus.PROCESSING_FORMATTING,
-        AppStatus.ERROR,
-    },
     AppStatus.PROCESSING_TRANSCRIPTION: {
         AppStatus.PROCESSING_FORMATTING,
         AppStatus.ERROR,
@@ -67,13 +41,13 @@ ALLOWED_TRANSITIONS: dict[AppStatus, set[AppStatus]] = {
     AppStatus.COPIED: {
         AppStatus.IDLE,
         AppStatus.RECORDING,
-        AppStatus.AWAITING_BUGREEL_UPLOAD,
         AppStatus.ERROR,
     },
     AppStatus.ERROR: {
         AppStatus.IDLE,
         AppStatus.RECORDING,
-        AppStatus.AWAITING_BUGREEL_UPLOAD,
+        AppStatus.PROCESSING_TRANSCRIPTION,
+        AppStatus.PROCESSING_FORMATTING,
     },
 }
 
@@ -107,10 +81,6 @@ class StateMachine:
     @property
     def is_processing(self) -> bool:
         return self.current in {
-            AppStatus.AWAITING_BUGREEL_UPLOAD,
-            AppStatus.AWAITING_BUGREEL_PUBLICATION,
-            AppStatus.PROCESSING_BUGREEL_ASSETS,
-            AppStatus.PROCESSING_BUGREEL_FALLBACK,
             AppStatus.PROCESSING_TRANSCRIPTION,
             AppStatus.PROCESSING_FORMATTING,
         }

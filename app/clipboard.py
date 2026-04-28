@@ -23,13 +23,13 @@ class ClipboardService:
 
     def copy_text(self, content: str) -> None:
         if not content or not content.strip():
-            raise ValueError("Não é possível copiar conteúdo vazio para a área de transferência.")
+            raise ValueError("Nao e possivel copiar conteudo vazio para a area de transferencia.")
         pyperclip.copy(content)
         self._register_owned_text(content)
 
     def copy_payload(self, content: str, file_paths: list[Path] | None = None) -> None:
         if not content or not content.strip():
-            raise ValueError("Não é possível copiar conteúdo vazio para a área de transferência.")
+            raise ValueError("Nao e possivel copiar conteudo vazio para a area de transferencia.")
 
         normalized_paths = [Path(path) for path in file_paths or [] if Path(path).exists()]
         if normalized_paths and self._copy_windows_bundle(content, normalized_paths):
@@ -42,10 +42,15 @@ class ClipboardService:
     def copy_files(self, file_paths: list[Path]) -> None:
         normalized_paths = [Path(path) for path in file_paths if Path(path).exists()]
         if not normalized_paths:
-            raise ValueError("Não há arquivos válidos para copiar no clipboard.")
+            raise ValueError("Nao ha arquivos validos para copiar no clipboard.")
+
+        with self._lock:
+            self._cancel_timer_locked()
+            self._last_copied_text = None
+
         if not self._copy_windows_files(normalized_paths):
             raise RuntimeError(
-                "Não foi possível copiar arquivos para o clipboard neste ambiente."
+                "Nao foi possivel copiar arquivos para o clipboard neste ambiente."
             )
 
     @staticmethod

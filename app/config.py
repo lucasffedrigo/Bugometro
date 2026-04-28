@@ -16,23 +16,16 @@ class AppConfig:
     log_file_path: Path
     hotkey: str
     restart_hotkey: str
-    bugreel_hotkey: str
+    screen_capture_hotkey: str
     video_attach_hotkey: str
-    bugreel_auto_trigger: bool
-    bugreel_command_hotkey: str
-    bugreel_auto_focus_chrome: bool
-    bugreel_boot_url: str
-    bugreel_trigger_delay_seconds: float
-    bugreel_auto_start_container: bool
-    bugreel_compose_dir: str
-    bugreel_start_timeout_seconds: float
-    bugreel_base_url: str
-    bugreel_api_token: str
-    bugreel_timeout_seconds: float
-    bugreel_capture_timeout_seconds: float
-    bugreel_start_confirmation_seconds: float
-    bugreel_download_evidence: bool
-    bugreel_frame_limit: int
+    native_capture_target: str
+    native_capture_fps: int
+    native_capture_frame_limit: int
+    native_capture_annotation_hold_seconds: float
+    devtools_mcp_enabled: bool
+    devtools_mcp_command: str
+    devtools_mcp_context_path: str
+    devtools_mcp_timeout_seconds: float
     hotkey_debounce_ms: int
     restart_delay_seconds: int
     sample_rate: int
@@ -75,47 +68,36 @@ class AppConfig:
             log_file_path=root / "bug_voice_reporter.log",
             hotkey=os.getenv("APP_HOTKEY", "ctrl+tab"),
             restart_hotkey=os.getenv("APP_RESTART_HOTKEY", "ctrl+caps lock"),
-            bugreel_hotkey=os.getenv("APP_BUGREEL_HOTKEY", "ctrl+f3"),
+            screen_capture_hotkey=os.getenv(
+                "APP_SCREEN_CAPTURE_HOTKEY",
+                "ctrl+f3",
+            ),
             video_attach_hotkey=os.getenv(
                 "APP_VIDEO_ATTACH_HOTKEY", "ctrl+shift+v"
             ),
-            bugreel_auto_trigger=_as_bool(
-                os.getenv("BUGREEL_AUTO_TRIGGER", "true")
+            native_capture_target=os.getenv(
+                "NATIVE_CAPTURE_TARGET",
+                "foreground_window",
+            ).strip().lower(),
+            native_capture_fps=int(os.getenv("NATIVE_CAPTURE_FPS", "10")),
+            native_capture_frame_limit=int(
+                os.getenv("NATIVE_CAPTURE_FRAME_LIMIT", "3")
             ),
-            bugreel_command_hotkey=os.getenv(
-                "BUGREEL_COMMAND_HOTKEY", "alt+shift+r"
+            native_capture_annotation_hold_seconds=float(
+                os.getenv("NATIVE_CAPTURE_ANNOTATION_HOLD_SECONDS", "1.5")
+            ),
+            devtools_mcp_enabled=_as_bool(
+                os.getenv("DEVTOOLS_MCP_ENABLED", "false")
+            ),
+            devtools_mcp_command=os.getenv(
+                "DEVTOOLS_MCP_COMMAND", ""
             ).strip(),
-            bugreel_auto_focus_chrome=_as_bool(
-                os.getenv("BUGREEL_AUTO_FOCUS_CHROME", "true")
-            ),
-            bugreel_boot_url=os.getenv(
-                "BUGREEL_BOOT_URL", ""
+            devtools_mcp_context_path=os.getenv(
+                "DEVTOOLS_MCP_CONTEXT_PATH", ""
             ).strip(),
-            bugreel_trigger_delay_seconds=float(
-                os.getenv("BUGREEL_TRIGGER_DELAY_SECONDS", "1.2")
+            devtools_mcp_timeout_seconds=float(
+                os.getenv("DEVTOOLS_MCP_TIMEOUT_SECONDS", "4")
             ),
-            bugreel_auto_start_container=_as_bool(
-                os.getenv("BUGREEL_AUTO_START_CONTAINER", "true")
-            ),
-            bugreel_compose_dir=os.getenv(
-                "BUGREEL_COMPOSE_DIR", r"C:\Users\lucas\Desktop\bugreel"
-            ).strip(),
-            bugreel_start_timeout_seconds=float(
-                os.getenv("BUGREEL_START_TIMEOUT_SECONDS", "25")
-            ),
-            bugreel_base_url=os.getenv("BUGREEL_BASE_URL", "").strip(),
-            bugreel_api_token=os.getenv("BUGREEL_API_TOKEN", "").strip(),
-            bugreel_timeout_seconds=float(os.getenv("BUGREEL_TIMEOUT_SECONDS", "20")),
-            bugreel_capture_timeout_seconds=float(
-                os.getenv("BUGREEL_CAPTURE_TIMEOUT_SECONDS", "90")
-            ),
-            bugreel_start_confirmation_seconds=float(
-                os.getenv("BUGREEL_START_CONFIRMATION_SECONDS", "12")
-            ),
-            bugreel_download_evidence=_as_bool(
-                os.getenv("BUGREEL_DOWNLOAD_EVIDENCE", "true")
-            ),
-            bugreel_frame_limit=int(os.getenv("BUGREEL_FRAME_LIMIT", "3")),
             hotkey_debounce_ms=int(os.getenv("HOTKEY_DEBOUNCE_MS", "400")),
             restart_delay_seconds=int(os.getenv("RESTART_DELAY_SECONDS", "5")),
             sample_rate=int(os.getenv("AUDIO_SAMPLE_RATE", "16000")),

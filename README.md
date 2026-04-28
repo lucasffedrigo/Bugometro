@@ -1,91 +1,40 @@
 # bug-voice-reporter
 
-App desktop leve para Windows que captura relatos de bug por voz, transcreve com Gemini ou OpenAI, formata em bug report estruturado e copia o resultado para a área de transferência.
+Aplicativo desktop para Windows que grava relatos de bug por voz, pode capturar a tela localmente, transcreve com Gemini ou OpenAI, monta o bug report e copia o resultado para a area de transferencia.
 
-O app opera com privacidade por padrão: não salva relatório local, não salva transcrição bruta e não grava log em arquivo, a menos que você habilite isso no `.env`.
+## O que o app faz
 
-## Visão Geral
+- grava o relato por hotkey global
+- captura a tela localmente com video e frames temporarios
+- permite anotar com seta usando `Ctrl + arrastar` durante a captura
+- transcreve com Gemini ou OpenAI
+- organiza a saida em um template de bug report
+- copia o texto final para o clipboard
 
-Fluxo principal:
+## Fluxos principais
 
-1. Pressione `Ctrl+F2`
-2. Fale livremente o relato
-3. Pressione `Ctrl+F2` novamente para encerrar manualmente
-4. O modal inicial some sozinho após 10 segundos, mas a gravação continua
-5. O áudio é enviado ao provedor configurado para transcrição
-6. A transcrição vira um bug report estruturado
-7. O texto final é copiado para o clipboard
+### Voz
 
-Fluxo robusto com BugReel:
+1. Pressione `Ctrl+F2` para iniciar a gravacao.
+2. Pressione `Ctrl+F2` novamente para encerrar.
+3. O app transcreve, formata e copia o bug report final.
 
-1. Pressione `Ctrl+F3`
-2. O app arma o monitoramento, foca o Chrome e dispara a hotkey interna da extensão
-3. Se necessário, finalize a captura na extensão normalmente
-4. O app aguarda a próxima gravação encerrada no BugReel
-5. Quando ela aparecer, o app consulta a API do BugReel
-6. O app tenta importar:
-   - título e resumo gerados pelo BugReel
-   - transcrição do vídeo
-   - metadados de ambiente
-   - eventos de console
-   - ações do usuário
-   - navegações/URLs
-   - keyframes/prints
-   - URL do vídeo
-6. O resultado final sai no template com contexto enriquecido e evidências
+### Voz + captura de tela
 
-O contexto BugReel é de uso único: após um relatório bem-sucedido, ele é limpo da memória.
-
-## Arquitetura de Uso
-
-- `Ctrl+F2`: inicia e finaliza a gravação por voz
-- `Ctrl+Caps Lock`: opcional, descarta o áudio atual e reinicia uma nova gravação em 5 segundos
-- `Ctrl+F3`: arma/inicia ou encerra a captura do BugReel
-- `Ctrl+Shift+V`: copia o último vídeo BugReel para colar no campo de anexo
-
-Com isso, você tem dois modos:
-
-- voz pura
-- voz + BugReel
-
-## Segurança
-
-- Nada é salvo localmente por padrão como histórico permanente
-- Quando há BugReel vinculado, o app pode baixar vídeo e prints para uma pasta temporária de evidências
-- O pacote temporário é usado para complementar o contexto e facilitar anexos
-- O relatório final copia o template em texto no clipboard
-- Opcionalmente, o app também pode publicar arquivos locais de evidência no clipboard (`CLIPBOARD_INCLUDE_FILES=true`)
-- Para endurecer a importação de contexto, configure `BUGREEL_BASE_URL` no `.env`
-
-Importante:
-
-- colar texto + arquivo no mesmo `Ctrl+V` depende do aplicativo de destino
-- quando `CLIPBOARD_INCLUDE_FILES=true`, alguns apps vão preferir o texto e outros os arquivos
-- por isso, o template final também inclui o caminho do pacote local de evidências quando ele existir
-
-## O Que Ficou No App
-
-- Hotkeys globais
-- Notificações visuais em estilo HUD
-- Sons de feedback
-- Bandeja do sistema com menu simples
-- Retry de transcrição
-- Validação de formato da resposta
-- Clipboard com limpeza automática
-- Sem janela de configurações
-- Persistência local desativada por padrão
-- Suporte a Gemini e OpenAI por configuração
-- Contexto opcional e enriquecido de BugReel
+1. Pressione `Ctrl+F3` para iniciar a captura de tela local.
+2. Reproduza o bug, fale normalmente e use `Ctrl + arrastar` se quiser destacar algo com uma seta.
+3. Pressione `Ctrl+F3` novamente para finalizar.
+4. O app processa a voz, consolida o video local e copia o bug report final.
+5. Use `Ctrl+Shift+V` para copiar o ultimo video e colar no campo de anexo quando precisar.
 
 ## Requisitos
 
-- Windows 10 ou Windows 11
+- Windows 10 ou 11
 - Python 3.11+
-- Microfone funcional
-- Chave do Gemini ou da OpenAI
-- Instância privada do BugReel, se quiser usar contexto com vídeo/evidência
+- microfone funcional
+- `GEMINI_API_KEY` ou `OPENAI_API_KEY`
 
-## Instalação
+## Instalacao
 
 ```powershell
 python -m venv .venv
@@ -93,89 +42,49 @@ python -m venv .venv
 python -m pip install -r requirements.txt
 ```
 
-## Configuração
+## Configuracao
 
-Copie `.env.example` para `.env` e preencha a chave do provedor que você quer usar:
-
-```env
-GEMINI_API_KEY=AIza...
-OPENAI_API_KEY=sk-...
-```
-
-No `.env`, você escolhe o provedor por etapa:
-
-- `TRANSCRIPTION_PROVIDER=gemini` ou `openai`
-- `FORMATTER_PROVIDER=gemini` ou `openai`
-
-Atalhos padrão:
-
-- `APP_HOTKEY=ctrl+f2`
-- `APP_RESTART_HOTKEY=` (vazio para desativar)
-- `APP_BUGREEL_HOTKEY=ctrl+f3`
-- `APP_VIDEO_ATTACH_HOTKEY=ctrl+shift+v`
-- `BUGREEL_AUTO_TRIGGER=true`
-- `BUGREEL_COMMAND_HOTKEY=alt+shift+r`
-- `BUGREEL_AUTO_FOCUS_CHROME=true`
-- `BUGREEL_BOOT_URL=` (vazio para não abrir nova aba automaticamente)
-- `BUGREEL_TRIGGER_DELAY_SECONDS=1.2`
-- `BUGREEL_AUTO_START_CONTAINER=true`
-- `BUGREEL_COMPOSE_DIR=C:\Users\lucas\Desktop\bugreel`
-- `BUGREEL_START_TIMEOUT_SECONDS=25`
-
-Configuração recomendada para BugReel privado:
+Copie `.env.example` para `.env` e preencha as chaves e opcoes desejadas.
 
 ```env
-BUGREEL_BASE_URL=https://seu-host-privado-do-bugreel
-BUGREEL_API_TOKEN=seu_extension_token_ou_token_privado
-BUGREEL_TIMEOUT_SECONDS=20
-BUGREEL_CAPTURE_TIMEOUT_SECONDS=90
-BUGREEL_DOWNLOAD_EVIDENCE=true
-BUGREEL_FRAME_LIMIT=3
+TRANSCRIPTION_PROVIDER=gemini
+FORMATTER_PROVIDER=gemini
+GEMINI_API_KEY=your_gemini_api_key_here
+OPENAI_API_KEY=your_openai_api_key_here
 ```
 
-Se `BUGREEL_API_TOKEN` estiver preenchida, o app consegue consultar rotas privadas do BugReel com mais confiabilidade.
+Variaveis mais importantes:
 
-Flags úteis:
+- `APP_HOTKEY`: inicia e encerra a gravacao por voz
+- `APP_SCREEN_CAPTURE_HOTKEY`: inicia e encerra a captura de tela local
+- `APP_VIDEO_ATTACH_HOTKEY`: copia o ultimo video local para anexo
+- `DEVTOOLS_MCP_ENABLED`: ativa a leitura opcional de contexto tecnico externo
+- `DEVTOOLS_MCP_COMMAND` ou `DEVTOOLS_MCP_CONTEXT_PATH`: apontam para o bridge que fala com Google DevTools MCP
+- `AUTO_STOP_ON_SILENCE`: encerra automaticamente apos silencio
+- `SAVE_LAST_OUTPUT`, `DEBUG_SAVE_TRANSCRIPTION` e `LOG_TO_FILE`: habilitam persistencia local
+- `NATIVE_CAPTURE_TARGET`, `NATIVE_CAPTURE_FPS` e `NATIVE_CAPTURE_FRAME_LIMIT`: ajustam a captura nativa
 
-- `SAVE_LAST_OUTPUT=false`: não grava `last_output.txt` por padrão
-- `DEBUG_SAVE_TRANSCRIPTION=false`: não grava `last_transcription.txt` por padrão
-- `AUTO_STOP_ON_SILENCE=false`: mantém a gravação ativa mesmo após silêncio; o encerramento padrão é manual pela hotkey
-- `CLIPBOARD_CLEAR_SECONDS=120`: limpa o conteúdo copiado automaticamente após 120 segundos, desde que você não tenha copiado outra coisa depois
-- `CLIPBOARD_INCLUDE_FILES=false`: mantém o `Ctrl+V` priorizando o template em texto
-- `LOG_TO_FILE=false`: evita criar `bug_voice_reporter.log` por padrão
+Os valores padrao e todas as opcoes disponiveis estao em `.env.example`.
 
-## Como Rodar
+## Contexto opcional de DevTools MCP
+
+O app continua funcionando normalmente sem nenhuma integracao adicional. Se voce quiser enriquecer o fluxo de voz + captura local com sinais tecnicos do Google DevTools MCP, habilite:
+
+- `DEVTOOLS_MCP_ENABLED=true`
+- `DEVTOOLS_MCP_COMMAND=node scripts/devtools_snapshot.mjs --browser-url http://127.0.0.1:9222 --wait-ms 1500`
+- ou `DEVTOOLS_MCP_CONTEXT_PATH` apontando para um arquivo JSON atualizado por um bridge externo
+
+Quando esse contexto estiver disponivel, o app tenta anexar ao prompt sinais como URL, titulo, navegador observado, console, excecoes JavaScript, elemento em foco, resumo de rede, requisicoes lentas ou com falha, recursos pesados, Web Vitals disponiveis, heap JS, long tasks, tempo de script/layout/recalculo de estilo e possiveis gargalos. Se o comando falhar, o arquivo nao existir, o Chrome observado nao estiver aberto ou o JSON vier invalido, o fluxo base segue normalmente sem regressao.
+
+Para usar o bridge local, mantenha um Chrome/Edge iniciado com remote debugging em `http://127.0.0.1:9222`. O script seleciona uma pagina real quando houver varias abas, ignora `about:`/`devtools://` quando possivel e devolve apenas sinais tecnicos para enriquecer o bug report.
+
+Observacao: o MCP conectado ao chat do Codex e o processo local do app sao ambientes separados. Para o texto copiado pelo app receber esses dados, o app precisa acessar um bridge local via `DEVTOOLS_MCP_COMMAND` ou um JSON em `DEVTOOLS_MCP_CONTEXT_PATH`.
+
+## Como executar
 
 ```powershell
 python -m app.main
 ```
-
-## Como Usar
-
-- `Ctrl+F2` inicia a gravação
-- `Ctrl+F2` encerra a gravação e inicia o processamento
-- se `APP_RESTART_HOTKEY` estiver configurada, essa hotkey descarta o áudio atual e reinicia a gravação em 5 segundos
-- pressione `Ctrl+F3` para iniciar o fluxo BugReel (preflight + abertura do painel de compartilhamento)
-- pressione `Ctrl+F3` novamente para encerrar a captura BugReel e iniciar o processamento
-- após colar o template com `Ctrl+V`, pressione `Ctrl+Shift+V` para copiar o último vídeo e cole no campo de anexo
-- O HUD de instrução fecha em até 10 segundos sem encerrar a gravação
-- Se houver BugReel vinculado, o app tenta baixar vídeo e prints para um pacote temporário
-- O template final inclui as evidências e, se `CLIPBOARD_INCLUDE_FILES=true`, o clipboard do Windows também recebe os arquivos locais
-
-## Bandeja do Sistema
-
-O app cria um ícone na área de notificação com:
-
-- Status atual
-- Abrir último bug report quando o histórico local estiver habilitado
-- Sair
-
-## Saídas Locais
-
-- `last_output.txt`: última saída formatada, apenas se `SAVE_LAST_OUTPUT=true`
-- `last_transcription.txt`: transcrição bruta apenas quando `DEBUG_SAVE_TRANSCRIPTION=true`
-- `bug_voice_reporter.log`: log técnico apenas quando `LOG_TO_FILE=true`
-- `bug_voice_reporter_bugreel_*`: pacote temporário de evidências do BugReel, criado apenas quando houver integração ativa
 
 ## Testes
 
@@ -183,34 +92,28 @@ O app cria um ícone na área de notificação com:
 python -m pytest
 ```
 
+## Privacidade
+
+- o app nao salva historico permanente por padrao
+- a transcricao bruta e a saida final so sao gravadas se isso for habilitado no `.env`
+- logs em arquivo ficam desativados por padrao
+- evidencias locais ficam em pasta temporaria e podem ser limpas automaticamente
+- o conteudo copiado pode ser limpo automaticamente do clipboard com `CLIPBOARD_CLEAR_SECONDS`
+
+## Saidas opcionais
+
+- `last_output.txt`
+- `last_transcription.txt`
+- `bug_voice_reporter.log`
+- pacote temporario `bug_voice_reporter_capture_*`
+
 ## Troubleshooting
 
-Microfone:
+- Verifique se o microfone esta disponivel no Windows.
+- Confirme que as hotkeys nao entram em conflito com outros apps.
+- Valide a chave e o provedor configurado no `.env`.
+- Se a captura de tela falhar, revise as dependencias instaladas em `requirements.txt`.
 
-- Confirme o dispositivo de entrada padrão no Windows
-- Verifique permissões de microfone no sistema
+## Arquitetura
 
-BugReel:
-
-- Confirme que o BugReel está no ar em `BUGREEL_BASE_URL`
-- Confirme no Chrome que o comando `Toggle BugReel recording` está em `Alt+Shift+R`
-- Configure `BUGREEL_BASE_URL` para evitar importar links de outro host por engano
-- Configure `BUGREEL_API_TOKEN` se a instância exigir autenticação para a API
-- Se o app não conseguir baixar o vídeo ou os prints, ele ainda continua com o relatório e os metadados como evidência
-
-Gemini:
-
-- Valide a `GEMINI_API_KEY`
-- Confira limites de uso da conta
-- A aplicação não expõe a chave em notificações e sanitiza mensagens de erro
-
-OpenAI:
-
-- Valide a `OPENAI_API_KEY`
-- Confira o projeto e limites de uso da conta
-- A aplicação não expõe a chave em notificações e sanitiza mensagens de erro
-
-Hotkeys:
-
-- Alguns ambientes exigem PowerShell com privilégios elevados
-- Evite conflito com outros apps usando os mesmos atalhos
+Detalhes sobre a estrategia de captura nativa do Windows estao em [docs/native-windows-architecture.md](docs/native-windows-architecture.md).

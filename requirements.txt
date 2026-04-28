@@ -1,6 +1,10 @@
+imageio>=2.37.0
+imageio-ffmpeg>=0.6.0
 keyboard>=0.13.5
+mss>=10.0.0
 numpy>=1.26.0
 pillow>=11.0.0
+pynput>=1.7.7
 pyperclip>=1.9.0
 pystray>=0.19.5
 pywin32>=308; platform_system=="Windows"

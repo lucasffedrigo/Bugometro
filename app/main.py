@@ -2,28 +2,20 @@ from __future__ import annotations
 
 import ctypes
 import os
-import re
 import signal
-import subprocess
 import threading
 import time
-import webbrowser
 from ctypes import wintypes
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
-from typing import Iterable
-
-from app.bugreel_client import (
-    BugReelClient,
-    BugReelClientError,
-    BugReelDownloadSettings,
-)
 from app.clipboard import ClipboardService
 from app.config import AppConfig
+from app.devtools_mcp_context import DevToolsMcpClient, combine_evidence_contexts
 from app.formatter import Formatter, FormattingError
 from app.hotkey import GlobalHotkeyManager
 from app.logger import setup_logging
+from app.native_capture import NativeScreenRecorder, NativeScreenRecordingResult
 from app.recorder import AudioRecorder, RecorderStopReason, RecordingResult
 from app.silence_detector import SilenceDetector
 from app.single_instance import SingleInstanceGuard
@@ -37,13 +29,12 @@ import keyboard
 
 
 @dataclass
-class PendingBugReelCapture:
-    existing_recording_ids: frozenset[str]
-    cancel_event: threading.Event
-    armed_at: datetime
-    max_existing_recording_order: tuple[int, int] | None = None
+class PendingNativeCapture:
+    started_at: datetime
     stop_requested: bool = False
-    stop_requested_at: float | None = None
+    finalized: bool = False
+    audio_result: RecordingResult | None = None
+    screen_result: NativeScreenRecordingResult | None = None
 
 
 class BugVoiceReporterApp:
@@ -70,10 +61,10 @@ class BugVoiceReporterApp:
         self._old_sigint_handler = None
         self._windows_ctrl_handler = None
         self._shutdown_event = threading.Event()
-        self._active_bugreel_capture: PendingBugReelCapture | None = None
-        self._last_bugreel_video_path: Path | None = None
-        self._bugreel_shortcuts_enabled = True
-        self._bugreel_shortcuts_error: str | None = None
+        self._active_native_capture: PendingNativeCapture | None = None
+        self._last_native_video_path: Path | None = None
+        self._screen_capture_shortcuts_enabled = True
+        self._screen_capture_shortcuts_error: str | None = None
 
         self._build_runtime_components()
         self.tray = SystemTrayController(
@@ -108,14 +99,13 @@ class BugVoiceReporterApp:
             prompt_path=self.config.prompt_path,
             timeout_seconds=self._resolve_timeout(self.config.formatter_provider),
         )
-        self.bugreel_client = BugReelClient(
-            api_token=self.config.bugreel_api_token,
-            timeout_seconds=self.config.bugreel_timeout_seconds,
-            download_settings=BugReelDownloadSettings(
-                enabled=self.config.bugreel_download_evidence,
-                frame_limit=self.config.bugreel_frame_limit,
-            ),
-            bundle_dir_factory=self.storage.create_temp_evidence_dir,
+        self.devtools_mcp_client = DevToolsMcpClient(
+            enabled=self.config.devtools_mcp_enabled,
+            command=self.config.devtools_mcp_command,
+            context_path=self.config.devtools_mcp_context_path,
+            timeout_seconds=self.config.devtools_mcp_timeout_seconds,
+            logger=self.logger,
+            working_dir=self.config.project_root,
         )
         self.recorder = AudioRecorder(
             sample_rate=self.config.sample_rate,
@@ -132,6 +122,30 @@ class BugVoiceReporterApp:
             on_speech_started=self._on_speech_started,
             on_finished=self._on_recording_finished,
         )
+        self.native_capture_audio_recorder = AudioRecorder(
+            sample_rate=self.config.sample_rate,
+            channels=self.config.channels,
+            block_size=self.config.block_size,
+            max_recording_seconds=self.config.max_recording_seconds,
+            silence_detector=SilenceDetector(
+                silence_threshold=self.config.silence_threshold,
+                silence_timeout_seconds=self.config.silence_timeout_seconds,
+            ),
+            auto_stop_on_silence=False,
+            temp_file_factory=self.storage.create_temp_wav_path,
+            logger=self.logger,
+            on_speech_started=self._on_native_capture_speech_started,
+            on_finished=self._on_native_capture_audio_finished,
+        )
+        self.native_screen_recorder = NativeScreenRecorder(
+            fps=self.config.native_capture_fps,
+            target_mode=self.config.native_capture_target,
+            frame_limit=self.config.native_capture_frame_limit,
+            annotation_hold_seconds=self.config.native_capture_annotation_hold_seconds,
+            bundle_dir_factory=self.storage.create_temp_evidence_dir,
+            logger=self.logger,
+            on_finished=self._on_native_capture_screen_finished,
+        )
         self.toggle_hotkey = GlobalHotkeyManager(
             hotkey=self.config.hotkey,
             callback=self.handle_toggle_hotkey,
@@ -146,14 +160,14 @@ class BugVoiceReporterApp:
             if self.config.restart_hotkey.strip()
             else None
         )
-        self.bugreel_hotkey = GlobalHotkeyManager(
-            hotkey=self.config.bugreel_hotkey,
-            callback=self.handle_bugreel_hotkey,
+        self.screen_capture_hotkey = GlobalHotkeyManager(
+            hotkey=self.config.screen_capture_hotkey,
+            callback=self.handle_native_capture_hotkey,
             debounce_ms=self.config.hotkey_debounce_ms,
         )
         self.video_attach_hotkey = GlobalHotkeyManager(
             hotkey=self.config.video_attach_hotkey,
-            callback=self.handle_video_attach_hotkey,
+            callback=self.handle_native_video_attach_hotkey,
             debounce_ms=self.config.hotkey_debounce_ms,
         )
 
@@ -170,21 +184,21 @@ class BugVoiceReporterApp:
             self.storage.cleanup_file(self.config.log_file_path)
 
         self.status_ui.start()
-        self._evaluate_bugreel_hotkey_configuration()
+        self._evaluate_screen_capture_hotkey_configuration()
         self.toggle_hotkey.start()
         if self.restart_hotkey is not None:
             self.restart_hotkey.start()
-        if self._bugreel_shortcuts_enabled:
-            self.bugreel_hotkey.start()
+        if self._screen_capture_shortcuts_enabled:
+            self.screen_capture_hotkey.start()
             self.video_attach_hotkey.start()
         self.tray.start()
         self._started = True
         self._set_status_label(AppStatus.IDLE.value)
         self.logger.info(
-            "bug-voice-reporter iniciado. Hotkeys toggle=%s restart=%s bugreel=%s anexar=%s providers transcrição=%s formatação=%s",
+            "bug-voice-reporter iniciado. Hotkeys toggle=%s restart=%s captura_tela=%s anexar=%s providers transcrição=%s formatação=%s",
             self.config.hotkey,
             self.config.restart_hotkey or "desativado",
-            self.config.bugreel_hotkey,
+            self.config.screen_capture_hotkey,
             self.config.video_attach_hotkey,
             self.config.transcription_provider,
             self.config.formatter_provider,
@@ -210,15 +224,16 @@ class BugVoiceReporterApp:
             return
         self._shutdown_event.set()
 
-        if self._active_bugreel_capture is not None:
-            self._active_bugreel_capture.cancel_event.set()
+        if self._active_native_capture is not None:
+            self.native_capture_audio_recorder.stop()
+            self.native_screen_recorder.stop()
 
         self._cancel_restart_countdown()
         self._cancel_idle_reset()
         self.toggle_hotkey.stop()
         if self.restart_hotkey is not None:
             self.restart_hotkey.stop()
-        self.bugreel_hotkey.stop()
+        self.screen_capture_hotkey.stop()
         self.video_attach_hotkey.stop()
         self.tray.stop()
         self.clipboard.stop()
@@ -245,33 +260,25 @@ class BugVoiceReporterApp:
                 kind="error",
             )
 
-    def handle_bugreel_hotkey(self) -> None:
+    def handle_native_capture_hotkey(self) -> None:
         try:
             with self._lock:
                 self.logger.info(
-                    "Hotkey de BugReel acionada no estado %s (captura_ativa=%s stop_requested=%s)",
+                    "Hotkey de captura nativa acionada no estado %s (captura_ativa=%s stop_requested=%s)",
                     self.state.current,
-                    self._active_bugreel_capture is not None,
-                    self._active_bugreel_capture.stop_requested
-                    if self._active_bugreel_capture is not None
+                    self._active_native_capture is not None,
+                    self._active_native_capture.stop_requested
+                    if self._active_native_capture is not None
                     else False,
                 )
                 self._cancel_idle_reset()
-                if not self._bugreel_shortcuts_enabled:
-                    self.status_ui.show_status(
-                        f"BUGREEL INDISPONIVEL\n{self._bugreel_shortcuts_error or 'revise as hotkeys no .env e reinicie o app'}",
-                        persistent=False,
-                        duration_ms=5200,
-                        kind="error",
-                    )
-                    return
 
                 if self.state.is_processing:
-                    self.logger.info("Hotkey de BugReel ignorada porque o app está processando.")
+                    self.logger.info("Hotkey de captura nativa ignorada porque o app esta processando.")
                     return
-                if self.state.is_recording_active:
+                if self.state.is_recording_active or self.recorder.is_recording:
                     self.status_ui.show_status(
-                        f"VOZ EM ANDAMENTO\nfinalize o relato com {self._format_hotkey_label(self.config.hotkey)} antes de abrir o BugReel",
+                        f"VOZ EM ANDAMENTO\nfinalize o relato com {self._format_hotkey_label(self.config.hotkey)} antes de abrir a captura nativa",
                         persistent=False,
                         duration_ms=4200,
                         kind="error",
@@ -280,50 +287,233 @@ class BugVoiceReporterApp:
                 if self._restart_pending:
                     self._cancel_restart_countdown()
 
-                if self._active_bugreel_capture is None:
+                if self._active_native_capture is None:
                     if self.state.current in {AppStatus.COPIED, AppStatus.ERROR}:
                         self.state.reset()
                         self._set_status_label(AppStatus.IDLE.value)
-                    if (
-                        self.config.bugreel_auto_trigger
-                        and self.config.bugreel_auto_focus_chrome
-                        and not self._focus_chrome_window()
-                    ):
-                        self.status_ui.show_status(
-                            "CHROME NAO ENCONTRADO\no navegador precisa estar aberto para iniciar o BugReel",
-                            persistent=False,
-                            duration_ms=5200,
-                            kind="error",
-                        )
-                        self.sound_notifier.play_error()
-                        return
-                    self._arm_bugreel_capture()
-                    self._auto_trigger_bugreel_capture()
-                else:
-                    if self._active_bugreel_capture.stop_requested:
-                        self.status_ui.show_status(
-                            "ENCERRAMENTO EM ANDAMENTO\no video ja esta sendo finalizado; aguarde o processamento",
-                            persistent=False,
-                            duration_ms=3600,
-                            kind="hud",
-                        )
-                        return
-                    self._active_bugreel_capture.stop_requested = True
-                    self._active_bugreel_capture.stop_requested_at = time.monotonic()
-                    self._transition_state(AppStatus.AWAITING_BUGREEL_UPLOAD)
-                    self._set_status_label(AppStatus.AWAITING_BUGREEL_UPLOAD.value)
-                    self._trigger_bugreel_stop_shortcut()
+                    self._start_native_capture()
+                    return
+
+                if self._active_native_capture.stop_requested:
                     self.status_ui.show_status(
-                        "GRAVACAO ENCERRADA\naguardando o BugReel enviar video e contexto para processamento",
-                        persistent=True,
-                        kind="processing",
+                        "ENCERRAMENTO EM ANDAMENTO\no video ja esta sendo finalizado; aguarde o processamento",
+                        persistent=False,
+                        duration_ms=3600,
+                        kind="hud",
                     )
-                    self.logger.info(
-                        "Encerramento do BugReel solicitado; aguardando gravacao finalizar."
-                    )
+                    return
+
+                self._active_native_capture.stop_requested = True
+                self.native_screen_recorder.stop()
+                self.native_capture_audio_recorder.stop(RecorderStopReason.MANUAL)
+                self._set_status_label("FINALIZING_NATIVE_CAPTURE")
+                self.status_ui.show_status(
+                    "GRAVACAO ENCERRADA\nprocessando voz, video e evidencias locais",
+                    persistent=True,
+                    kind="processing",
+                )
         except Exception:
-            self.logger.exception("Falha ao tratar a hotkey de BugReel.")
-            self._move_to_error("Não foi possível controlar o BugReel.")
+            self.logger.exception("Falha ao tratar a hotkey de captura nativa.")
+            self._move_to_error("Nao foi possivel controlar a captura nativa.")
+
+    def handle_native_video_attach_hotkey(self) -> None:
+        try:
+            with self._lock:
+                video_path = self._last_native_video_path
+                active_native = self._active_native_capture
+                current_state = self.state.current
+                processing_now = self.state.is_processing or (
+                    active_native is not None and active_native.stop_requested
+                )
+
+            if video_path is None or not video_path.exists():
+                if active_native is not None and active_native.stop_requested:
+                    message = (
+                        "VIDEO AINDA EM PREPARO\na captura terminou; aguarde a finalizacao"
+                    )
+                elif active_native is not None:
+                    message = (
+                        f"VIDEO AINDA NAO DISPONIVEL\na captura esta em andamento; finalize com {self._format_hotkey_label(self.config.screen_capture_hotkey)}"
+                    )
+                elif processing_now:
+                    message = (
+                        "VIDEO AINDA EM PROCESSAMENTO\naguarde a analise terminar antes de usar CTRL+SHIFT+V"
+                    )
+                elif current_state == AppStatus.COPIED:
+                    message = (
+                        "ULTIMO FLUXO SEM VIDEO VALIDO\nrepita a captura nativa para gerar uma nova evidencia"
+                    )
+                else:
+                    message = (
+                        f"NENHUM VIDEO PARA COLAR\ninicie uma captura nativa com {self._format_hotkey_label(self.config.screen_capture_hotkey)}"
+                    )
+                self.status_ui.show_status(
+                    message,
+                    persistent=False,
+                    duration_ms=3600,
+                    kind="error",
+                )
+                return
+
+            self.clipboard.copy_files([video_path])
+            self.status_ui.show_status(
+                "VIDEO COPIADO\nagora use CTRL+V no campo de anexo",
+                persistent=False,
+                duration_ms=3600,
+                kind="success",
+            )
+            self.sound_notifier.play_success()
+        except Exception:
+            self.logger.exception("Falha ao copiar o video nativo para o clipboard.")
+            self.status_ui.show_status(
+                "VIDEO INDISPONIVEL\na evidencia nao foi encontrada para colagem",
+                persistent=False,
+                duration_ms=2400,
+                kind="error",
+            )
+
+    def _start_native_capture(self) -> None:
+        try:
+            self._cancel_restart_countdown()
+            self._last_native_video_path = None
+            self.native_screen_recorder.start()
+            self.native_capture_audio_recorder.start()
+            self._active_native_capture = PendingNativeCapture(started_at=datetime.now())
+            self._set_status_label("NATIVE_CAPTURE")
+            self.status_ui.show_status(
+                "CAPTURA NATIVA INICIADA\nreproduza o bug, fale normalmente e use CTRL + arrastar para apontar com uma seta\nfinalize com "
+                f"{self._format_hotkey_label(self.config.screen_capture_hotkey)}",
+                persistent=True,
+                kind="recording",
+            )
+            self.sound_notifier.play_start()
+        except Exception as exc:
+            self.logger.exception("Nao foi possivel iniciar a captura nativa.")
+            self.native_screen_recorder.stop()
+            self.native_capture_audio_recorder.stop(RecorderStopReason.FAILED)
+            raise RuntimeError(
+                "Nao foi possivel iniciar a captura nativa. Revise as dependencias e tente novamente."
+            ) from exc
+
+    def _on_native_capture_speech_started(self) -> None:
+        self.status_ui.show_status(
+            f"VOZ DETECTADA\ncontinue narrando e finalize a captura com {self._format_hotkey_label(self.config.screen_capture_hotkey)}",
+            persistent=True,
+            kind="recording",
+        )
+
+    def _on_native_capture_audio_finished(self, result: RecordingResult) -> None:
+        with self._lock:
+            capture = self._active_native_capture
+            if capture is None:
+                self.storage.cleanup_file(result.path)
+                return
+            capture.audio_result = result
+        self._maybe_finalize_native_capture()
+
+    def _on_native_capture_screen_finished(
+        self,
+        result: NativeScreenRecordingResult,
+    ) -> None:
+        with self._lock:
+            capture = self._active_native_capture
+            if capture is None:
+                return
+            capture.screen_result = result
+        self._maybe_finalize_native_capture()
+
+    def _maybe_finalize_native_capture(self) -> None:
+        with self._lock:
+            capture = self._active_native_capture
+            if capture is None or capture.finalized:
+                return
+            if capture.audio_result is None or capture.screen_result is None:
+                return
+            capture.finalized = True
+            audio_result = capture.audio_result
+            screen_result = capture.screen_result
+
+        threading.Thread(
+            target=self._process_native_capture,
+            args=(audio_result, screen_result),
+            name="native-capture-processor",
+            daemon=True,
+        ).start()
+
+    def _process_native_capture(
+        self,
+        audio_result: RecordingResult,
+        screen_result: NativeScreenRecordingResult,
+    ) -> None:
+        audio_path = audio_result.path
+        try:
+            if audio_result.reason == RecorderStopReason.FAILED:
+                raise RuntimeError("Nao foi possivel concluir a gravacao de voz da captura nativa.")
+            if screen_result.reason == "failed" or screen_result.video_path is None:
+                raise RuntimeError(
+                    screen_result.error_message
+                    or "Nao foi possivel concluir a gravacao de tela nativa."
+                )
+
+            self.status_ui.show_status(
+                "PROCESSANDO CAPTURA NATIVA\ntranscrevendo a voz e consolidando o video local",
+                persistent=True,
+                kind="processing",
+            )
+            transcription = self.transcriber.transcribe(audio_path)
+            self.storage.save_last_transcription(transcription)
+
+            with self._lock:
+                self._set_status_label(AppStatus.PROCESSING_FORMATTING.value)
+
+            context = screen_result.to_context()
+            devtools_context = self.devtools_mcp_client.collect_context()
+            if devtools_context is not None:
+                self.logger.info(
+                    "Contexto tecnico adicional do DevTools MCP anexado ao fluxo da captura nativa."
+                )
+            evidence_context = combine_evidence_contexts(context, devtools_context) or context
+            self._last_native_video_path = context.video_path
+            formatted = self.formatter.format_bug_report(
+                transcription,
+                evidence_context=evidence_context,
+            )
+            self.storage.save_last_output(formatted)
+            file_bundle = (
+                evidence_context.evidence_file_paths()
+                if self.config.clipboard_include_files
+                else []
+            )
+            self.clipboard.copy_payload(formatted, file_bundle)
+
+            with self._lock:
+                if self.state.current in {AppStatus.ERROR, AppStatus.COPIED}:
+                    self.state.reset()
+                if self.state.current == AppStatus.IDLE:
+                    self._transition_state(AppStatus.PROCESSING_FORMATTING)
+                self._transition_state(AppStatus.COPIED)
+                self._set_status_label(AppStatus.COPIED.value)
+                self._active_native_capture = None
+
+            self.status_ui.show_status(
+                "BUG REPORT PRONTO\nCtrl+V cola o texto final\nCtrl+Shift+V copia o video para colar no proximo campo de anexo",
+                persistent=False,
+                duration_ms=5200,
+                kind="success",
+            )
+            self.sound_notifier.play_success()
+            self.logger.info("Fluxo de captura nativa concluido com sucesso.")
+            self._schedule_idle_reset()
+        except (FormattingError, TranscriptionError, RuntimeError, ValueError) as exc:
+            self._move_to_error(str(exc), cleanup_path=audio_path)
+        except Exception:
+            self.logger.exception("Falha inesperada durante o processamento da captura nativa.")
+            self._move_to_error(
+                "Ocorreu um erro inesperado durante o processamento da captura nativa.",
+                cleanup_path=audio_path,
+            )
+        finally:
+            self.storage.cleanup_file(audio_path)
 
     def handle_toggle_hotkey(self) -> None:
         try:
@@ -339,16 +529,16 @@ class BugVoiceReporterApp:
                         duration_ms=1800,
                         kind="hud",
                     )
-                    self.logger.info("Reinício agendado cancelado pela hotkey toggle.")
+                    self.logger.info("Reinicio agendado cancelado pela hotkey toggle.")
                     return
 
                 if self.state.is_processing:
-                    self.logger.info("Hotkey toggle ignorada porque o app está processando.")
+                    self.logger.info("Hotkey toggle ignorada porque o app esta processando.")
                     return
 
-                if self._active_bugreel_capture is not None:
+                if self._active_native_capture is not None:
                     self.status_ui.show_status(
-                        f"BUGREEL EM ANDAMENTO\ntermine a captura e depois use {self._format_hotkey_label(self.config.bugreel_hotkey)} se precisar encerrar por atalho",
+                        f"CAPTURA DE TELA EM ANDAMENTO\ntermine a captura com {self._format_hotkey_label(self.config.screen_capture_hotkey)} antes de gravar so a voz",
                         persistent=False,
                         duration_ms=4200,
                         kind="error",
@@ -375,84 +565,24 @@ class BugVoiceReporterApp:
                     return
         except Exception:
             self.logger.exception("Falha ao tratar a hotkey toggle.")
-            self._move_to_error("Não foi possível processar o atalho global.")
-
-    def handle_video_attach_hotkey(self) -> None:
-        try:
-            with self._lock:
-                self.logger.info(
-                    "Hotkey de anexo de vídeo acionada no estado %s",
-                    self.state.current,
-                )
-                video_path = self._last_bugreel_video_path
-                active_capture = self._active_bugreel_capture
-                current_state = self.state.current
-                processing_now = self.state.is_processing
-
-            if video_path is None or not video_path.exists():
-                if active_capture is not None and active_capture.stop_requested:
-                    message = (
-                        "VIDEO AINDA EM PREPARO\na captura terminou; aguarde o envio e a analise final"
-                    )
-                elif active_capture is not None:
-                    message = (
-                        f"VIDEO AINDA NAO DISPONIVEL\na captura esta em andamento; finalize com {self._format_hotkey_label(self.config.bugreel_hotkey)}"
-                    )
-                elif processing_now:
-                    message = (
-                        "VIDEO AINDA EM PROCESSAMENTO\naguarde a analise terminar antes de usar CTRL+SHIFT+V"
-                    )
-                elif current_state == AppStatus.COPIED:
-                    message = (
-                        "ULTIMO FLUXO SEM VIDEO VALIDO\nrepita a captura do BugReel e confirme o envio do video"
-                    )
-                else:
-                    message = (
-                        f"NENHUM VIDEO PARA COLAR\ninicie uma captura BugReel com {self._format_hotkey_label(self.config.bugreel_hotkey)}"
-                    )
-                self.status_ui.show_status(
-                    message,
-                    persistent=False,
-                    duration_ms=3600,
-                    kind="error",
-                )
-                return
-
-            self.clipboard.copy_files([video_path])
-            time.sleep(0.06)
-            keyboard.send("ctrl+v")
-            self.status_ui.show_status(
-                "VIDEO COLADO\na evidencia visual ja esta pronta para a issue",
-                persistent=False,
-                duration_ms=3600,
-                kind="success",
-            )
-            self.sound_notifier.play_success()
-        except Exception:
-            self.logger.exception("Falha ao copiar o vídeo do BugReel para o clipboard.")
-            self.status_ui.show_status(
-                "VIDEO INDISPONIVEL\na evidencia nao foi encontrada para colagem",
-                persistent=False,
-                duration_ms=2400,
-                kind="error",
-            )
+            self._move_to_error("Nao foi possivel processar o atalho global.")
 
     def handle_restart_hotkey(self) -> None:
         try:
             with self._lock:
                 self.logger.info(
-                    "Hotkey de reinício acionada no estado %s",
+                    "Hotkey de reinicio acionada no estado %s",
                     self.state.current,
                 )
                 self._cancel_idle_reset()
 
                 if self.state.is_processing:
-                    self.logger.info("Hotkey de reinício ignorada porque o app está processando.")
+                    self.logger.info("Hotkey de reinicio ignorada porque o app esta processando.")
                     return
 
-                if self._active_bugreel_capture is not None:
+                if self._active_native_capture is not None:
                     self.status_ui.show_status(
-                        "BUGREEL PREPARADO\nreinicio de voz fica bloqueado enquanto a captura de tela estiver armada",
+                        "CAPTURA DE TELA EM ANDAMENTO\nreinicio de voz fica bloqueado enquanto a evidencia estiver ativa",
                         persistent=False,
                         duration_ms=1800,
                         kind="error",
@@ -460,7 +590,7 @@ class BugVoiceReporterApp:
                     return
 
                 if self._restart_pending:
-                    self.logger.info("Hotkey de reinício ignorada porque o reinício já está agendado.")
+                    self.logger.info("Hotkey de reinicio ignorada porque o reinicio ja esta agendado.")
                     return
 
                 if self.state.current in {AppStatus.RECORDING, AppStatus.SILENCE_COUNTDOWN}:
@@ -471,226 +601,13 @@ class BugVoiceReporterApp:
                             kind="countdown",
                         )
                         self.sound_notifier.play_discard()
-                        self.logger.info("Gravação atual será descartada.")
+                        self.logger.info("Gravacao atual sera descartada.")
                     return
 
-                self.logger.info("Hotkey de reinício ignorada fora de uma gravação ativa.")
+                self.logger.info("Hotkey de reinicio ignorada fora de uma gravacao ativa.")
         except Exception:
-            self.logger.exception("Falha ao tratar a hotkey de reinício.")
-            self._move_to_error("Não foi possível processar o atalho de reinício.")
-
-    def _arm_bugreel_capture(self) -> None:
-        self._require_bugreel_configuration()
-        self._ensure_bugreel_online()
-        baseline = self.bugreel_client.list_recordings(
-            self.config.bugreel_base_url,
-            limit=100,
-        )
-        max_existing_recording_order = max(
-            (
-                self._bugreel_recording_order_value(item.recording_id)
-                for item in baseline
-            ),
-            default=None,
-        )
-        self._last_bugreel_video_path = None
-        capture = PendingBugReelCapture(
-            existing_recording_ids=frozenset(item.recording_id for item in baseline),
-            cancel_event=threading.Event(),
-            armed_at=datetime.now(),
-            max_existing_recording_order=max_existing_recording_order,
-        )
-        self._active_bugreel_capture = capture
-        self._set_status_label("BUGREEL_ARMED")
-        self.status_ui.show_status(
-            f"CAPTURA PRONTA\nescolha a janela, clique em Compartilhar e reproduza o bug\npara encerrar, use {self._format_hotkey_label(self.config.bugreel_hotkey)} ou pare na extensao",
-            persistent=True,
-            kind="hud",
-        )
-        self.sound_notifier.play_start()
-        self.logger.info("Monitoramento do BugReel iniciado.")
-        threading.Thread(
-            target=self._await_bugreel_capture,
-            args=(capture,),
-            name="bugreel-await",
-            daemon=True,
-        ).start()
-
-    def _ensure_bugreel_online(self) -> None:
-        try:
-            self.status_ui.show_status(
-                "VALIDANDO BUGREEL\nchecando se o servico local esta pronto para gravar",
-                persistent=False,
-                duration_ms=1200,
-                kind="hud",
-            )
-            self.bugreel_client.list_recordings(self.config.bugreel_base_url, limit=1)
-            self.status_ui.show_status(
-                "BUGREEL ONLINE\nproxima etapa: abrir o seletor de janela",
-                persistent=False,
-                duration_ms=3000,
-                kind="success",
-            )
-            return
-        except BugReelClientError:
-            if not self.config.bugreel_auto_start_container:
-                raise RuntimeError(
-                    "BugReel offline. Inicie o container ou habilite BUGREEL_AUTO_START_CONTAINER=true."
-                )
-
-        self.status_ui.show_status(
-            "BUGREEL OFFLINE\niniciando Docker, subindo o container e validando a conexao",
-            persistent=True,
-            kind="processing",
-        )
-        self._start_bugreel_container()
-
-        deadline = time.monotonic() + self.config.bugreel_start_timeout_seconds
-        notified_waiting = False
-        while time.monotonic() < deadline:
-            try:
-                self.bugreel_client.list_recordings(self.config.bugreel_base_url, limit=1)
-                self.logger.info("BugReel ficou online após autostart.")
-                self.status_ui.show_status(
-                    "BUGREEL PRONTO\nservico online e captura liberada",
-                    persistent=False,
-                    duration_ms=1400,
-                    kind="success",
-                )
-                return
-            except BugReelClientError:
-                if not notified_waiting:
-                    self.status_ui.show_status(
-                        "SUBINDO BUGREEL\nassim que o servico responder, o seletor de janela sera aberto",
-                        persistent=True,
-                        kind="processing",
-                    )
-                    notified_waiting = True
-                time.sleep(1.0)
-
-        raise RuntimeError(
-            "BugReel não ficou online a tempo após autostart. Passos: 1) verifique Docker Desktop, 2) confirme BUGREEL_COMPOSE_DIR, 3) execute docker compose up -d."
-        )
-
-    def _start_bugreel_container(self) -> None:
-        compose_dir = self.config.bugreel_compose_dir.strip()
-        if not compose_dir:
-            raise RuntimeError("BUGREEL_COMPOSE_DIR não foi configurado.")
-        if not Path(compose_dir).exists():
-            raise RuntimeError(
-                f"BUGREEL_COMPOSE_DIR inválido: {compose_dir}"
-            )
-
-        self.status_ui.show_status(
-            "INICIANDO CONTAINER\npreparando o BugReel para a captura",
-            persistent=True,
-            kind="processing",
-        )
-        try:
-            result = subprocess.run(
-                ["docker", "compose", "up", "-d"],
-                cwd=compose_dir,
-                capture_output=True,
-                text=True,
-                timeout=90,
-                check=False,
-            )
-        except Exception as exc:
-            raise RuntimeError(
-                "Não foi possível executar 'docker compose up -d'."
-            ) from exc
-
-        if result.returncode != 0:
-            stderr_line = (result.stderr or "").strip().splitlines()
-            details = stderr_line[-1] if stderr_line else "falha ao subir container"
-            raise RuntimeError(f"Autostart do BugReel falhou: {details}")
-
-        self.status_ui.show_status(
-            "CONTAINER INICIADO\nvalidando a conexao do BugReel",
-            persistent=True,
-            kind="processing",
-        )
-
-    def _auto_trigger_bugreel_capture(self) -> None:
-        if not self.config.bugreel_auto_trigger:
-            return
-        self.status_ui.show_status(
-            "ABRINDO SELETOR DO BUGREEL\no painel de compartilhamento vai aparecer agora",
-            persistent=False,
-            duration_ms=5200,
-            kind="hud",
-        )
-        threading.Thread(
-            target=self._dispatch_bugreel_trigger,
-            name="bugreel-trigger",
-            daemon=True,
-        ).start()
-
-    def _dispatch_bugreel_trigger(self) -> None:
-        try:
-            if self.config.bugreel_boot_url and self._is_safe_bugreel_boot_url(
-                self.config.bugreel_boot_url
-            ):
-                webbrowser.open(self.config.bugreel_boot_url)
-            elif self.config.bugreel_boot_url:
-                self.logger.info(
-                    "BUGREEL_BOOT_URL ignorada por seguranca/localidade: %s",
-                    self.config.bugreel_boot_url,
-                )
-            time.sleep(max(0.2, self.config.bugreel_trigger_delay_seconds))
-            command_hotkey = self._effective_bugreel_command_hotkey()
-            if not command_hotkey:
-                return
-            if self.config.bugreel_auto_focus_chrome and not self._is_chrome_foreground():
-                if not self._focus_chrome_window():
-                    self.status_ui.show_status(
-                        "CHROME FORA DE FOCO\ndeixe o Chrome na frente e tente novamente",
-                        persistent=False,
-                        duration_ms=5200,
-                        kind="error",
-                    )
-                    self.sound_notifier.play_error()
-                    return
-            self.status_ui.show_status(
-                "ESCOLHA A JANELA\nquando o painel abrir, selecione a janela e clique em Compartilhar",
-                persistent=False,
-                duration_ms=5600,
-                kind="hud",
-            )
-            keyboard.send(command_hotkey)
-            self.status_ui.show_status(
-                f"AGUARDANDO COMPARTILHAMENTO\ndepois de clicar em Compartilhar, reproduza o bug e finalize com {self._format_hotkey_label(self.config.bugreel_hotkey)}",
-                persistent=True,
-                kind="hud",
-            )
-            self.logger.info(
-                "Disparo automático do BugReel enviado por hotkey interna (%s).",
-                command_hotkey,
-            )
-        except Exception:
-            self.logger.exception("Falha ao disparar inicialização automática do BugReel.")
-            self.status_ui.show_status(
-                f"NAO FOI POSSIVEL ABRIR O BUGREEL\ndeixe o Chrome visivel e tente {self._format_hotkey_label(self.config.bugreel_hotkey)} novamente",
-                persistent=False,
-                duration_ms=4200,
-                kind="error",
-            )
-
-    def _cancel_bugreel_capture(self) -> None:
-        capture = self._active_bugreel_capture
-        if capture is None:
-            return
-        capture.cancel_event.set()
-        self._active_bugreel_capture = None
-        self._last_bugreel_video_path = None
-        self._set_status_label(AppStatus.IDLE.value)
-        self.status_ui.show_status(
-            "BUGREEL CANCELADO\nnenhum video novo sera processado",
-            persistent=False,
-            duration_ms=3600,
-            kind="hud",
-        )
-        self.logger.info("Monitoramento do BugReel cancelado.")
+            self.logger.exception("Falha ao tratar a hotkey de reinicio.")
+            self._move_to_error("Nao foi possivel processar o atalho de reinicio.")
 
     def _transition_state(
         self,
@@ -708,345 +625,6 @@ class BugVoiceReporterApp:
             )
             return
         self.state.transition(new_state, error_message=error_message)
-
-    def _trigger_bugreel_stop_shortcut(self) -> None:
-        command_hotkey = self._effective_bugreel_command_hotkey()
-        if not command_hotkey:
-            return
-        try:
-            keyboard.send(command_hotkey)
-            self.logger.info(
-                "Tentativa de parada do BugReel enviada por hotkey interna (%s).",
-                command_hotkey,
-            )
-            self.status_ui.show_status(
-                "ENCERRANDO CAPTURA\no comando foi enviado; depois disso o app continua sozinho",
-                persistent=False,
-                duration_ms=3200,
-                kind="hud",
-            )
-        except Exception:
-            self.logger.exception("Falha ao enviar comando de parada para o BugReel.")
-
-    def _await_bugreel_capture(self, capture: PendingBugReelCapture) -> None:
-        deadline = time.monotonic() + self.config.bugreel_capture_timeout_seconds
-        start_confirmation_deadline = (
-            time.monotonic() + self.config.bugreel_start_confirmation_seconds
-        )
-        stop_confirmation_notice_seconds = 5.0
-        announced_started = False
-        announced_stopping = False
-        announced_unconfirmed_start = False
-        announced_waiting_upload = False
-        saw_new_recording = False
-        observed_statuses: set[str] = set()
-        try:
-            while time.monotonic() < deadline:
-                if capture.cancel_event.wait(1.2):
-                    return
-                if self._active_bugreel_capture is not capture:
-                    return
-
-                summaries = self.bugreel_client.list_recordings(
-                    self.config.bugreel_base_url,
-                    limit=max(len(capture.existing_recording_ids) + 5, 100),
-                )
-                for summary in summaries:
-                    if summary.recording_id in capture.existing_recording_ids:
-                        continue
-                    if not self._is_bugreel_recording_newer_than_baseline(summary, capture):
-                        continue
-                    if not self._summary_belongs_to_current_capture(summary, capture):
-                        continue
-                    saw_new_recording = True
-                    status = summary.status.strip().lower()
-                    if status:
-                        observed_statuses.add(status)
-                    if summary.is_failed_terminal():
-                        self._move_to_error(self._build_bugreel_failed_message(summary))
-                        return
-                    if not summary.is_ready_for_import():
-                        with self._lock:
-                            self._transition_state(AppStatus.AWAITING_BUGREEL_PUBLICATION)
-                            self._set_status_label(AppStatus.AWAITING_BUGREEL_PUBLICATION.value)
-                        if capture.stop_requested and not announced_stopping:
-                            self.status_ui.show_status(
-                                "ENCERRAMENTO CONFIRMADO\naguardando upload do video e inicio do processamento",
-                                persistent=True,
-                                kind="processing",
-                            )
-                            announced_stopping = True
-                        elif not capture.stop_requested and not announced_started:
-                            self.status_ui.show_status(
-                                f"GRAVACAO EM ANDAMENTO\nreproduza o bug e depois encerre com {self._format_hotkey_label(self.config.bugreel_hotkey)} ou pela extensao",
-                                persistent=True,
-                                kind="hud",
-                            )
-                            announced_started = True
-                        continue
-
-                    with self._lock:
-                        if self._active_bugreel_capture is not capture:
-                            return
-                        self._active_bugreel_capture = None
-                        self._transition_state(AppStatus.PROCESSING_BUGREEL_ASSETS)
-                        self._set_status_label(AppStatus.PROCESSING_BUGREEL_ASSETS.value)
-
-                    self.status_ui.show_status(
-                        "PROCESSANDO EVIDENCIAS\nlendo video, audio, logs e contexto da captura",
-                        persistent=True,
-                        kind="processing",
-                    )
-                    self._process_bugreel_capture(
-                        summary.to_context(self.config.bugreel_base_url)
-                    )
-                    return
-
-                if (
-                    not saw_new_recording
-                    and capture.stop_requested
-                    and capture.stop_requested_at is not None
-                    and time.monotonic()
-                    >= capture.stop_requested_at + stop_confirmation_notice_seconds
-                ):
-                    if not announced_waiting_upload:
-                        self.logger.info(
-                            "A gravacao local foi encerrada, mas a API do BugReel ainda nao publicou uma nova captura; aguardando upload automatico."
-                        )
-                        with self._lock:
-                            self._transition_state(AppStatus.AWAITING_BUGREEL_PUBLICATION)
-                            self._set_status_label(AppStatus.AWAITING_BUGREEL_PUBLICATION.value)
-                        self.status_ui.show_status(
-                            "AGUARDANDO ENVIO DO VIDEO\na gravacao ja terminou; agora o BugReel precisa publicar os arquivos",
-                            persistent=True,
-                            kind="processing",
-                        )
-                        announced_waiting_upload = True
-                    continue
-
-                if (
-                    not saw_new_recording
-                    and not capture.stop_requested
-                    and time.monotonic() >= start_confirmation_deadline
-                ):
-                    if not announced_unconfirmed_start:
-                        self.logger.warning(
-                            "Nenhum sinal de inicio da gravacao BugReel foi detectado no tempo esperado; mantendo monitoramento porque a extensao pode publicar a captura apenas no encerramento."
-                        )
-                        self.status_ui.show_status(
-                            f"AGUARDANDO INICIO DA GRAVACAO\nse o cronometro da extensao comecou, continue normalmente e finalize com {self._format_hotkey_label(self.config.bugreel_hotkey)}",
-                            persistent=True,
-                            kind="hud",
-                        )
-                        announced_unconfirmed_start = True
-                    continue
-
-            self._move_to_error(
-                self._build_bugreel_timeout_message(
-                    capture=capture,
-                    saw_new_recording=saw_new_recording,
-                    observed_statuses=observed_statuses,
-                )
-            )
-        except BugReelClientError as exc:
-            self._move_to_error(str(exc))
-        except Exception:
-            self.logger.exception("Falha ao aguardar a gravação do BugReel.")
-            self._move_to_error(
-                "Não foi possível monitorar a captura do BugReel."
-            )
-
-    def _summary_belongs_to_current_capture(
-        self,
-        summary,
-        capture: PendingBugReelCapture,
-    ) -> bool:
-        estimated_end = summary.estimated_end_at()
-        if estimated_end is None:
-            return True
-        return estimated_end >= (capture.armed_at - timedelta(seconds=2))
-
-    @staticmethod
-    def _bugreel_recording_order_value(recording_id: str) -> tuple[int, int] | None:
-        match = re.search(r"(\d{4})-(\d+)$", recording_id.strip())
-        if not match:
-            return None
-        return int(match.group(1)), int(match.group(2))
-
-    def _is_bugreel_recording_newer_than_baseline(
-        self,
-        summary,
-        capture: PendingBugReelCapture,
-    ) -> bool:
-        if capture.max_existing_recording_order is None:
-            return True
-        summary_order = self._bugreel_recording_order_value(summary.recording_id)
-        if summary_order is None:
-            return True
-        return summary_order > capture.max_existing_recording_order
-
-    def _build_bugreel_failed_message(self, summary) -> str:
-        status = summary.status.strip().lower() or "error"
-        if status in {"canceled", "cancelled", "aborted"}:
-            return "CAPTURA CANCELADA\nnenhuma janela foi compartilhada ou o seletor foi fechado"
-        if status == "error":
-            return (
-                "CAPTURA FALHOU\n"
-                "o BugReel encerrou a tentativa antes do compartilhamento. Escolha uma janela e clique em Compartilhar."
-            )
-        return f"CAPTURA INTERROMPIDA\nstatus retornado pelo BugReel: {status}"
-
-    def _find_recent_bugreel_fallback(self, capture: PendingBugReelCapture):
-        try:
-            summaries = self.bugreel_client.list_recordings(
-                self.config.bugreel_base_url,
-                limit=5,
-            )
-        except BugReelClientError:
-            return None
-
-        threshold = capture.armed_at - timedelta(seconds=45)
-        for summary in summaries:
-            if not summary.is_ready_for_import():
-                continue
-            if summary.recording_id not in capture.existing_recording_ids:
-                continue
-            estimated_end = summary.estimated_end_at()
-            if estimated_end is None:
-                continue
-            if estimated_end >= threshold:
-                self.logger.info(
-                    "Usando fallback da gravação recente do BugReel: %s (%s).",
-                    summary.recording_id,
-                    summary.status,
-                )
-                return summary
-        return None
-
-    def _process_bugreel_capture(self, context) -> None:
-        try:
-            with self._lock:
-                self._transition_state(AppStatus.PROCESSING_BUGREEL_ASSETS)
-                self._set_status_label(AppStatus.PROCESSING_BUGREEL_ASSETS.value)
-            enriched = self._wait_for_bugreel_assets(context)
-            self.logger.info(
-                "BugReel publicado: status=%s artifacts_ready=%s ai_status=%s",
-                enriched.recording_status or "desconhecido",
-                enriched.artifacts_ready,
-                enriched.ai_status or "nao_informado",
-            )
-            if enriched.audio_capture_lines:
-                self.logger.info("Audio do BugReel: %s", " | ".join(enriched.audio_capture_lines))
-            raw_report = self._build_bugreel_raw_report(enriched)
-            evidence_files = enriched.evidence_file_paths()
-            self._last_bugreel_video_path = self._pick_video_path(evidence_files)
-            if self._last_bugreel_video_path is None or not self._last_bugreel_video_path.exists():
-                raise BugReelClientError(
-                    "O video do BugReel ainda nao ficou disponivel. Aguarde o upload terminar na extensao e tente novamente."
-                )
-            with self._lock:
-                self._transition_state(AppStatus.PROCESSING_FORMATTING)
-                self._set_status_label(AppStatus.PROCESSING_FORMATTING.value)
-            formatted = self.formatter.format_bug_report(
-                raw_report,
-                bugreel_context=enriched,
-            )
-            self.storage.save_last_output(formatted)
-            self.clipboard.copy_text(formatted)
-
-            with self._lock:
-                self._transition_state(AppStatus.COPIED)
-                self._set_status_label(AppStatus.COPIED.value)
-
-            self.status_ui.show_status(
-                "ANALISE PRONTA\nCtrl+V cola o bug report\nCtrl+Shift+V cola o video",
-                persistent=False,
-                duration_ms=5200,
-                kind="success",
-            )
-            self.sound_notifier.play_success()
-            self.logger.info("Fluxo BugReel concluído com sucesso.")
-            self._schedule_idle_reset()
-        except (BugReelClientError, FormattingError, ValueError) as exc:
-            self._move_to_error(str(exc))
-        except Exception:
-            self.logger.exception("Falha inesperada durante o processamento do BugReel.")
-            self._move_to_error(
-                "Ocorreu um erro inesperado durante o processamento do BugReel."
-            )
-
-    def _wait_for_bugreel_assets(self, context):
-        last_enriched = None
-        for _ in range(8):
-            enriched = self.bugreel_client.enrich_context(context)
-            last_enriched = enriched
-            video_path = self._pick_video_path(enriched.evidence_file_paths())
-            if video_path is not None and video_path.exists():
-                return enriched
-            status_suffix = ""
-            if enriched.ai_status:
-                status_suffix = f"\nIA INTERNA DO BUGREEL: {enriched.ai_status}"
-            self.status_ui.show_status(
-                "FINALIZANDO EVIDENCIAS\naguardando o video final ficar disponivel"
-                + status_suffix,
-                persistent=True,
-                kind="processing",
-            )
-            time.sleep(1.0)
-        if last_enriched is None:
-            raise BugReelClientError("Nao foi possivel carregar os artefatos do BugReel.")
-        return last_enriched
-
-    def _build_bugreel_raw_report(self, enriched) -> str:
-        transcript = enriched.transcript_excerpt.strip()
-        if transcript:
-            return transcript
-
-        media_audio = self._first_transcribable_media(enriched.local_files)
-        if media_audio is not None:
-            try:
-                with self._lock:
-                    self._transition_state(AppStatus.PROCESSING_BUGREEL_FALLBACK)
-                    self._set_status_label(AppStatus.PROCESSING_BUGREEL_FALLBACK.value)
-                self.status_ui.show_status(
-                    "PROCESSANDO MIDIA LOCAL\ntranscrevendo audio e video porque a analise interna do BugReel ficou indisponivel",
-                    persistent=True,
-                    kind="processing",
-                )
-                transcribed = self.transcriber.transcribe(media_audio).strip()
-                if transcribed:
-                    self.logger.info(
-                        "Transcrição de fallback do BugReel aplicada a partir de %s.",
-                        media_audio.name,
-                    )
-                    return transcribed
-            except (TranscriptionError, ValueError):
-                self.logger.info(
-                    "Fallback de transcrição do BugReel indisponível para %s.",
-                    media_audio.name,
-                )
-
-        return (
-            enriched.summary.strip()
-            or enriched.title.strip()
-            or "Use o contexto do BugReel para estruturar este bug report."
-        )
-
-    @staticmethod
-    def _first_transcribable_media(local_files: Iterable[Path]) -> Path | None:
-        accepted = {".wav", ".mp3", ".m4a", ".mp4", ".webm", ".ogg"}
-        for path in local_files:
-            if path.suffix.lower() in accepted and path.exists():
-                return path
-        return None
-
-    @staticmethod
-    def _pick_video_path(local_files: Iterable[Path]) -> Path | None:
-        video_suffixes = {".webm", ".mp4", ".mov", ".mkv", ".avi"}
-        for path in local_files:
-            if path.suffix.lower() in video_suffixes and path.exists():
-                return path
-        return None
 
     def _start_voice_recording(self) -> None:
         try:
@@ -1135,7 +713,16 @@ class BugVoiceReporterApp:
                 kind="processing",
             )
 
-            formatted = self.formatter.format_bug_report(transcription)
+            devtools_context = self.devtools_mcp_client.collect_context()
+            if devtools_context is not None:
+                self.logger.info(
+                    "Contexto tecnico adicional do DevTools MCP anexado ao fluxo de voz."
+                )
+
+            formatted = self.formatter.format_bug_report(
+                transcription,
+                evidence_context=devtools_context,
+            )
             self.storage.save_last_output(formatted)
             self.clipboard.copy_payload(formatted, [])
 
@@ -1169,10 +756,11 @@ class BugVoiceReporterApp:
 
     def _move_to_error(self, message: str, cleanup_path: Path | None = None) -> None:
         with self._lock:
-            if self._active_bugreel_capture is not None:
-                self._active_bugreel_capture.cancel_event.set()
-            self._active_bugreel_capture = None
-            self._last_bugreel_video_path = None
+            if self._active_native_capture is not None:
+                self.native_screen_recorder.stop()
+                self.native_capture_audio_recorder.stop()
+            self._active_native_capture = None
+            self._last_native_video_path = None
             if self.state.current != AppStatus.ERROR and self.state.can_transition(AppStatus.ERROR):
                 self.state.transition(AppStatus.ERROR, error_message=message)
                 self._set_status_label(AppStatus.ERROR.value)
@@ -1236,7 +824,11 @@ class BugVoiceReporterApp:
             if self._restart_cancel_event.is_set():
                 return
             self._restart_pending = False
-            if self.state.is_processing or self.recorder.is_recording or self._active_bugreel_capture is not None:
+            if (
+                self.state.is_processing
+                or self.recorder.is_recording
+                or self._active_native_capture is not None
+            ):
                 self.logger.info("Reinício automático cancelado por mudança de estado.")
                 return
             if self.state.current != AppStatus.IDLE:
@@ -1261,76 +853,54 @@ class BugVoiceReporterApp:
         self._require_provider_key(self.config.formatter_provider)
         if not self.config.prompt_path.exists():
             raise RuntimeError(
-                f"Arquivo de prompt não encontrado em {self.config.prompt_path}"
+                f"Arquivo de prompt nao encontrado em {self.config.prompt_path}"
             )
         prompt_content = self.config.prompt_path.read_text(encoding="utf-8")
         if "{{TRANSCRICAO}}" not in prompt_content:
             raise RuntimeError(
                 "O arquivo de prompt precisa conter o placeholder {{TRANSCRICAO}}."
             )
-        command_hotkey = self._normalize_hotkey(self._effective_bugreel_command_hotkey())
-        if command_hotkey == self._normalize_hotkey(self.config.video_attach_hotkey):
+        capture_hotkey = self._normalize_hotkey(self.config.screen_capture_hotkey)
+        attach_hotkey = self._normalize_hotkey(self.config.video_attach_hotkey)
+        if capture_hotkey == attach_hotkey:
             raise RuntimeError(
-                "Conflito de hotkeys: APP_VIDEO_ATTACH_HOTKEY não pode ser igual a BUGREEL_COMMAND_HOTKEY."
+                "Conflito de hotkeys: APP_VIDEO_ATTACH_HOTKEY nao pode ser igual a APP_SCREEN_CAPTURE_HOTKEY."
             )
 
-    def _evaluate_bugreel_hotkey_configuration(self) -> None:
-        self._bugreel_shortcuts_enabled = True
-        self._bugreel_shortcuts_error = None
+    def _evaluate_screen_capture_hotkey_configuration(self) -> None:
+        self._screen_capture_shortcuts_enabled = True
+        self._screen_capture_shortcuts_error = None
 
         configured = {
-            "APP_BUGREEL_HOTKEY": self.config.bugreel_hotkey,
+            "APP_SCREEN_CAPTURE_HOTKEY": self.config.screen_capture_hotkey,
             "APP_VIDEO_ATTACH_HOTKEY": self.config.video_attach_hotkey,
-            "BUGREEL_COMMAND_HOTKEY": self._effective_bugreel_command_hotkey(),
         }
         seen: dict[str, str] = {}
         for key, value in configured.items():
             normalized = self._normalize_hotkey(value)
             if not normalized:
-                self._bugreel_shortcuts_enabled = False
-                self._bugreel_shortcuts_error = (
-                    f"{key} está vazio. Corrija o .env e reinicie o app."
+                self._screen_capture_shortcuts_enabled = False
+                self._screen_capture_shortcuts_error = (
+                    f"{key} esta vazio. Corrija o .env e reinicie o app."
                 )
                 break
             if normalized in seen:
                 other = seen[normalized]
-                self._bugreel_shortcuts_enabled = False
-                self._bugreel_shortcuts_error = (
+                self._screen_capture_shortcuts_enabled = False
+                self._screen_capture_shortcuts_error = (
                     f"Conflito de hotkeys: {other} e {key} usam o mesmo atalho."
                 )
                 break
             seen[normalized] = key
 
-        if not self._bugreel_shortcuts_enabled:
-            self.logger.error(self._bugreel_shortcuts_error)
+        if not self._screen_capture_shortcuts_enabled:
+            self.logger.error(self._screen_capture_shortcuts_error)
             self.status_ui.show_status(
-                f"ATALHOS DO BUGREEL BLOQUEADOS\n{self._bugreel_shortcuts_error}",
+                f"ATALHOS DE CAPTURA BLOQUEADOS\n{self._screen_capture_shortcuts_error}",
                 persistent=False,
                 duration_ms=8000,
                 kind="error",
             )
-            return
-
-        expected_command = self._normalize_hotkey("alt+shift+r")
-        effective_command_hotkey = self._effective_bugreel_command_hotkey()
-        current_command = self._normalize_hotkey(effective_command_hotkey)
-        if current_command != expected_command:
-            self.status_ui.show_status(
-                f"ATALHO INTERNO DO BUGREEL\natual: {self._format_hotkey_label(effective_command_hotkey)}\nrecomendado: ALT + SHIFT + R",
-                persistent=False,
-                duration_ms=6200,
-                kind="hud",
-            )
-            self.logger.warning(
-                "BUGREEL_COMMAND_HOTKEY fora do padrão recomendado (alt+shift+r): %s",
-                effective_command_hotkey,
-            )
-
-    def _require_bugreel_configuration(self) -> None:
-        if not self.config.bugreel_base_url:
-            raise RuntimeError("BUGREEL_BASE_URL não foi configurado no .env.")
-        if not self.config.bugreel_api_token:
-            raise RuntimeError("BUGREEL_API_TOKEN não foi configurado no .env.")
 
     def _set_status_label(self, value: str) -> None:
         self._status_label = value
@@ -1353,161 +923,19 @@ class BugVoiceReporterApp:
                 if self.config.restart_hotkey.strip()
                 else ""
             )
-            + f"GRAVAR TELA = {self._format_hotkey_label(self.config.bugreel_hotkey)}\n"
+            + f"GRAVAR TELA = {self._format_hotkey_label(self.config.screen_capture_hotkey)}\n"
+            "ANOTAR SETA = CTRL + arrastar\n"
             "COLAR TEXTO = CTRL + V\n"
-            f"COLAR VIDEO = {self._format_hotkey_label(self.config.video_attach_hotkey)}\n"
+            f"COPIAR VIDEO = {self._format_hotkey_label(self.config.video_attach_hotkey)}\n"
             f"{privacy_note}"
         )
 
-    def _effective_bugreel_command_hotkey(self) -> str:
-        configured = self.config.bugreel_command_hotkey.strip()
-        normalized = self._normalize_hotkey(configured)
-        if normalized == "ctrl+shift+r":
-            return "alt+shift+r"
-        return configured
-
-    def _bugreel_toggle_binding_help(self) -> str:
-        command_raw = self._effective_bugreel_command_hotkey().strip()
-        bugreel_hotkey = self._format_hotkey_label(self.config.bugreel_hotkey)
-        if not command_raw:
-            return (
-                f"proxima acao: configure BUGREEL_COMMAND_HOTKEY no .env, abra o painel e tente "
-                f"{bugreel_hotkey} novamente"
-            )
-        command_hotkey = self._format_hotkey_label(command_raw)
-        return (
-            f"proxima acao: abra a extensao do BugReel no Chrome, confirme que ela esta conectada, "
-            f"vincule {command_hotkey} ao comando 'Toggle BugReel recording', abra o painel, clique em Compartilhar e depois use {bugreel_hotkey}"
-        )
-
-    def _build_bugreel_timeout_message(
-        self,
-        capture: PendingBugReelCapture,
-        saw_new_recording: bool,
-        observed_statuses: set[str],
-    ) -> str:
-        if not saw_new_recording:
-            return f"CAPTURA NAO INICIOU\n{self._bugreel_toggle_binding_help()}"
-
-        status_text = ", ".join(sorted(observed_statuses)) if observed_statuses else "desconhecido"
-        if {"cancelled", "canceled", "aborted", "failed", "error"} & observed_statuses:
-            return (
-                "CAPTURA INTERROMPIDA\npossiveis causas: painel cancelado, compartilhamento interrompido ou limite de duracao"
-            )
-        if {"uploading", "processing", "transcribing", "analyzing", "queued", "pending"} & observed_statuses:
-            return (
-                "PROCESSAMENTO AINDA EM CURSO\n"
-                f"status atual: {status_text}. Aguarde a conclusao e tente CTRL+SHIFT+V novamente."
-            )
-        if "recording" in observed_statuses and not capture.stop_requested:
-            return (
-                f"CAPTURA AINDA ATIVA\nuse {self._format_hotkey_label(self.config.bugreel_hotkey)} para encerrar e iniciar o processamento"
-            )
-        if capture.stop_requested:
-            return (
-                "VIDEO NAO FOI PUBLICADO A TEMPO\n"
-                f"status observado: {status_text}. O upload automatico nao concluiu a tempo; revise a extensao e tente novamente."
-            )
-        return f"NENHUMA NOVA CAPTURA\n{self._bugreel_toggle_binding_help()}"
-
     @staticmethod
     def _normalize_hotkey(hotkey: str) -> str:
-        raw = " ".join(hotkey.strip().lower().split())
-        if not raw:
-            return ""
-        raw = (
-            raw.replace("control", "ctrl")
-            .replace("capslock", "caps lock")
-            .replace("windows", "win")
-            .replace("option", "alt")
-        )
-        aliases = {
-            "caps": "caps lock",
-            "esc": "escape",
-        }
-        parts = [aliases.get(part.strip(), part.strip()) for part in raw.split("+") if part.strip()]
-        if not parts:
-            return ""
-
-        ordered_modifiers: list[str] = []
-        main_keys: list[str] = []
-        modifier_order = ("ctrl", "alt", "shift", "win", "cmd")
-        modifier_set = set(modifier_order)
-
-        for part in parts:
-            if part in modifier_set:
-                if part not in ordered_modifiers:
-                    ordered_modifiers.append(part)
-            else:
-                main_keys.append(part)
-
-        sorted_modifiers = [modifier for modifier in modifier_order if modifier in ordered_modifiers]
-        return "+".join([*sorted_modifiers, *main_keys])
-
-    def _is_chrome_foreground(self) -> bool:
-        if os.name != "nt":
-            return True
-        user32 = ctypes.windll.user32
-        hwnd = user32.GetForegroundWindow()
-        if not hwnd:
-            return False
-
-        class_name = ctypes.create_unicode_buffer(256)
-        user32.GetClassNameW(hwnd, class_name, len(class_name))
-        if "chrome" in class_name.value.lower():
-            return True
-
-        title = ctypes.create_unicode_buffer(512)
-        user32.GetWindowTextW(hwnd, title, len(title))
-        return "chrome" in title.value.lower()
-
-    def _focus_chrome_window(self) -> bool:
-        if os.name != "nt":
-            return True
-        if self._is_chrome_foreground():
-            return True
-
-        user32 = ctypes.windll.user32
-        windows: list[int] = []
-        enum_proc = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
-
-        def callback(hwnd: int, _lparam: int) -> bool:
-            if not user32.IsWindowVisible(hwnd):
-                return True
-            class_name = ctypes.create_unicode_buffer(256)
-            user32.GetClassNameW(hwnd, class_name, len(class_name))
-            if "chrome_widgetwin" not in class_name.value.lower():
-                return True
-            windows.append(hwnd)
-            return False
-
-        callback_fn = enum_proc(callback)
-        user32.EnumWindows(callback_fn, 0)
-        if not windows:
-            return False
-
-        hwnd = windows[0]
-        SW_RESTORE = 9
-        user32.ShowWindow(hwnd, SW_RESTORE)
-        user32.BringWindowToTop(hwnd)
-        user32.SetForegroundWindow(hwnd)
-        time.sleep(0.12)
-        return self._is_chrome_foreground()
-
-    @staticmethod
-    def _is_safe_bugreel_boot_url(url: str) -> bool:
-        normalized = url.strip().lower()
-        if not normalized:
-            return False
-        return normalized.startswith(
-            (
-                "chrome-extension://",
-                "moz-extension://",
-                "http://localhost:",
-                "https://localhost:",
-                "http://127.0.0.1:",
-                "https://127.0.0.1:",
-            )
+        return "+".join(
+            segment.strip().lower()
+            for segment in hotkey.split("+")
+            if segment.strip()
         )
 
     @staticmethod

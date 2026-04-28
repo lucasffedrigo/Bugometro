@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import unicodedata
 from pathlib import Path
+from typing import Protocol
 
 import requests
 
-from app.bugreel_context import BugReelContext, EnrichedBugReelContext
 from app.context_extractor import ContextExtractor
 from app.gemini_utils import extract_text_from_response_json, format_gemini_http_error
 from app.openai_utils import (
@@ -20,6 +21,12 @@ from app.output_validator import (
 
 class FormattingError(RuntimeError):
     """Raised when the formatter cannot build the final bug report."""
+
+
+class EvidenceContext(Protocol):
+    def to_prompt_block(self) -> str: ...
+
+    def evidence_lines(self) -> list[str]: ...
 
 
 class Formatter:
@@ -43,80 +50,74 @@ class Formatter:
     def render_prompt(
         self,
         transcription: str,
-        bugreel_context: BugReelContext | EnrichedBugReelContext | None = None,
+        evidence_context: EvidenceContext | None = None,
     ) -> str:
         if not transcription or not transcription.strip():
-            raise FormattingError("A transcrição está vazia; não há conteúdo para formatar.")
+            raise FormattingError("A transcricao esta vazia; nao ha conteudo para formatar.")
 
         template = self.load_prompt_template()
         prompt = template.replace("{{TRANSCRICAO}}", transcription.strip())
         context_block = ContextExtractor.extract(transcription).to_prompt_block()
         if context_block:
             prompt += (
-                "\n\nContexto técnico detectado automaticamente. "
+                "\n\nContexto tecnico detectado automaticamente. "
                 "Use apenas se estiver consistente com o relato:\n"
                 f"{context_block}"
             )
-        if bugreel_context is not None:
+        if evidence_context is not None:
             prompt += (
-                "\n\nContexto adicional do BugReel:\n"
-                f"{bugreel_context.to_prompt_block()}"
+                "\n\nContexto adicional da captura:\n"
+                f"{evidence_context.to_prompt_block()}"
             )
         return prompt
 
     def format_bug_report(
         self,
         transcription: str,
-        bugreel_context: BugReelContext | EnrichedBugReelContext | None = None,
+        evidence_context: EvidenceContext | None = None,
     ) -> str:
-        prompt = self.render_prompt(transcription, bugreel_context=bugreel_context)
-        content = self._generate_text(prompt, "a formatação do bug report")
+        prompt = self.render_prompt(transcription, evidence_context=evidence_context)
+        content = self._generate_text(prompt, "a formatacao do bug report")
         missing = validate_bug_report(content)
         warnings = validate_bug_report_warnings(content)
 
         if missing or warnings:
             repair_prompt = (
                 "Corrija o bug report abaixo para obedecer ao formato desejado. "
-                "Não invente fatos, mantenha o conteúdo técnico e retorne apenas o texto final. "
-                "Se possível, garanta que a primeira linha do título comece com "
-                "[Plataforma/Componente]. A ausência desses colchetes não deve remover "
-                "conteúdo nem inventar dados.\n\n"
+                "Nao invente fatos, mantenha o conteudo tecnico e retorne apenas o texto final. "
+                "Se possivel, garanta que a primeira linha do titulo comece com "
+                "[Plataforma/Componente]. A ausencia desses colchetes nao deve remover "
+                "conteudo nem inventar dados.\n\n"
                 f"Bug report atual:\n{content}\n\n"
-                f"Pendências impeditivas: {', '.join(missing) or 'nenhuma'}\n"
+                f"Pendencias impeditivas: {', '.join(missing) or 'nenhuma'}\n"
                 f"Ajustes desejados: {', '.join(warnings) or 'nenhum'}"
             )
-            if bugreel_context is not None:
-                repair_prompt += (
-                    "\n\nMantenha o link do BugReel dentro de Evidências e cite que "
-                    "o vídeo está disponível no relatório privado:\n"
-                    f"{bugreel_context.url}"
-                )
             content = self._generate_text(repair_prompt, "o reparo do bug report")
 
-        content = self._inject_bugreel_evidence(content, bugreel_context)
+        content = self._inject_evidence_lines(content, evidence_context)
         missing = validate_bug_report(content)
         if missing:
             raise FormattingError(
-                "A resposta formatada não seguiu o template obrigatório do bug report. "
-                f"Pendências: {describe_missing(missing)}."
+                "A resposta formatada nao seguiu o template obrigatorio do bug report. "
+                f"Pendencias: {describe_missing(missing)}."
             )
         return content.strip()
 
     def format_detailed_bug_report(self, transcription: str, base_report: str) -> str:
         prompt = (
             "Crie uma variante mais detalhada do bug report abaixo para uso interno de QA. "
-            "Mantenha o conteúdo fiel ao relato, não invente fatos e escreva em português do Brasil.\n\n"
+            "Mantenha o conteudo fiel ao relato, nao invente fatos e escreva em portugues do Brasil.\n\n"
             f"Relato bruto:\n{transcription}\n\n"
             f"Bug report base:\n{base_report}\n\n"
             "Formato desejado:\n"
-            "Título:\n[texto]\n\n"
-            "Resumo técnico:\n[texto]\n\n"
+            "Titulo:\n[texto]\n\n"
+            "Resumo tecnico:\n[texto]\n\n"
             "Contexto identificado:\n- [texto]\n\n"
             "Comportamento atual:\n- [texto]\n\n"
             "Comportamento esperado:\n- [texto]\n\n"
             "Riscos e impacto:\n- [texto]\n\n"
-            "Lacunas de evidência:\n- [texto]\n\n"
-            "Passos para reprodução:\n1. [texto]\n2. [texto]\n3. [texto]\n"
+            "Lacunas de evidencia:\n- [texto]\n\n"
+            "Passos para reproducao:\n1. [texto]\n2. [texto]\n3. [texto]\n"
         )
         return self._generate_text(prompt, "a variante detalhada do bug report").strip()
 
@@ -216,29 +217,29 @@ class Formatter:
         return ""
 
     @staticmethod
-    def _inject_bugreel_evidence(
+    def _inject_evidence_lines(
         content: str,
-        bugreel_context: BugReelContext | EnrichedBugReelContext | None,
+        evidence_context: EvidenceContext | None,
     ) -> str:
-        if bugreel_context is None:
+        if evidence_context is None:
             return content.strip()
 
         lines = content.strip().splitlines()
         evidence_index: int | None = None
         for index, line in enumerate(lines):
-            normalized = line.strip().lower().replace("*", "")
-            if normalized in {"evidencia:", "evidência:", "evidencias:", "evidências:"}:
+            normalized = Formatter._normalize_evidence_text(line)
+            if normalized in {"evidencia:", "evidencias:", "evidncia:", "evidncias:"}:
                 evidence_index = index
                 break
 
         if evidence_index is None:
             return content.strip()
 
-        evidence_lines = bugreel_context.evidence_lines()
+        evidence_lines = evidence_context.evidence_lines()
         next_section_index = len(lines)
         for index in range(evidence_index + 1, len(lines)):
             stripped = lines[index].strip()
-            normalized = stripped.lower().replace("*", "")
+            normalized = Formatter._normalize_evidence_text(stripped)
             if not stripped:
                 continue
             if stripped.startswith("- ") or stripped.startswith("* "):
@@ -258,26 +259,34 @@ class Formatter:
 
         additions = [f"- {item}" for item in evidence_lines if item not in existing_block]
 
-        if not existing_block or existing_block.lower() in {"não informado", "nao informado"}:
+        normalized_existing_block = Formatter._normalize_evidence_text(existing_block)
+        if not existing_block or normalized_existing_block in {"nao informado", "no informado"}:
             merged_lines = additions
         else:
             merged_lines = existing_lines + additions
 
-        rebuilt = lines[: evidence_index + 1] + merged_lines + trailing_lines
+        separator = [""] if merged_lines and trailing_lines and trailing_lines[0].strip() else []
+        rebuilt = lines[: evidence_index + 1] + merged_lines + separator + trailing_lines
         return "\n".join(rebuilt).strip()
+
+    @staticmethod
+    def _normalize_evidence_text(value: str) -> str:
+        normalized = value.strip().lower().replace("*", "")
+        normalized = unicodedata.normalize("NFD", normalized)
+        normalized = "".join(
+            char for char in normalized if unicodedata.category(char) != "Mn"
+        )
+        return normalized.replace("?", "").replace("\ufffd", "")
 
     @staticmethod
     def _sanitize_evidence_lines(lines: list[str]) -> list[str]:
         blocked_tokens = (
             "appdata\\local\\temp",
-            "bug_voice_reporter_bugreel",
+            "bug_voice_reporter_capture",
             "pacote local de evid",
             "arquivos locais",
-            "vídeo bugreel:",
-            "video bugreel:",
-            "/api/recordings/",
-            "relatório bugreel:",
-            "relatorio bugreel:",
+            "video da captura:",
+            "captura privada:",
         )
         cleaned: list[str] = []
         for line in lines:
