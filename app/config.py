@@ -16,6 +16,7 @@ class AppConfig:
     log_file_path: Path
     hotkey: str
     restart_hotkey: str
+    title_paste_hotkey: str
     screen_capture_hotkey: str
     video_attach_hotkey: str
     native_capture_target: str
@@ -68,6 +69,7 @@ class AppConfig:
             log_file_path=root / "bug_voice_reporter.log",
             hotkey=os.getenv("APP_HOTKEY", "ctrl+tab"),
             restart_hotkey=os.getenv("APP_RESTART_HOTKEY", "ctrl+caps lock"),
+            title_paste_hotkey=os.getenv("APP_TITLE_PASTE_HOTKEY", "ctrl+'"),
             screen_capture_hotkey=os.getenv(
                 "APP_SCREEN_CAPTURE_HOTKEY",
                 "ctrl+f3",
