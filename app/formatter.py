@@ -286,6 +286,7 @@ class Formatter:
             "pacote local de evid",
             "arquivos locais",
             "video da captura:",
+            "gif da captura:",
             "captura privada:",
         )
         cleaned: list[str] = []

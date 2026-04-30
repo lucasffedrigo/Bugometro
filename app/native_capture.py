@@ -8,7 +8,8 @@ import threading
 import time
 import tkinter as tk
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from ctypes import wintypes
+from dataclasses import dataclass
 from pathlib import Path
 
 import keyboard
@@ -45,8 +46,8 @@ class NativeCaptureContext:
             lines.append("- Frames de apoio foram salvos temporariamente para contexto local.")
         lines.extend(
             [
-                "- O video final esta disponivel localmente para anexo rapido via CTRL+SHIFT+V.",
-                "- Use o video apenas como evidencia complementar ao relato por voz.",
+                "- O GIF final esta disponivel localmente para colagem rapida no anexo via CTRL+SHIFT+V.",
+                "- Use o GIF apenas como evidencia complementar ao relato por voz.",
                 "- Nao invente dados visuais que nao estejam consistentes com o relato.",
             ]
         )
@@ -283,7 +284,7 @@ class NativeScreenRecorder:
             if self._running:
                 raise RuntimeError("Ja existe uma captura de tela nativa em andamento.")
             self._bundle_dir = self.bundle_dir_factory()
-            self._video_path = self._bundle_dir / "native_evidence.mp4"
+            self._video_path = self._bundle_dir / "native_evidence.gif"
             self._target = self._resolve_target(self.target_mode)
             self._stop_event.clear()
             self._start_time = time.monotonic()
@@ -340,11 +341,9 @@ class NativeScreenRecorder:
             self._annotation.start()
             writer = imageio.get_writer(
                 self._video_path,
+                mode="I",
                 fps=self.fps,
-                codec="libx264",
-                pixelformat="yuv420p",
-                macro_block_size=1,
-                ffmpeg_log_level="error",
+                loop=0,
             )
             frame_interval = 1.0 / float(self.fps)
 
@@ -358,6 +357,10 @@ class NativeScreenRecorder:
                         frame,
                         origin=(self._target.region["left"], self._target.region["top"]),
                         now=frame_started,
+                    )
+                    frame = _draw_cursor_on_frame(
+                        frame,
+                        origin=(self._target.region["left"], self._target.region["top"]),
                     )
                     frame = _ensure_even_dimensions(frame)
                     writer.append_data(frame)
@@ -396,7 +399,7 @@ class NativeScreenRecorder:
                 annotation_count=self._annotation.completed_count,
             )
             self.logger.info(
-                "Captura nativa concluida. alvo=%s video=%s frames=%s duracao=%.1fs",
+                "Captura nativa concluida. alvo=%s gif=%s frames=%s duracao=%.1fs",
                 self._target.title or self._target.kind,
                 self._video_path,
                 frames_written,
@@ -578,6 +581,53 @@ def _ensure_even_dimensions(frame: np.ndarray) -> np.ndarray:
     if not pad_bottom and not pad_right:
         return frame
     return np.pad(frame, ((0, pad_bottom), (0, pad_right), (0, 0)), mode="edge")
+
+
+def _draw_cursor_on_frame(
+    frame: np.ndarray,
+    origin: tuple[int, int],
+    cursor_position: tuple[int, int] | None = None,
+) -> np.ndarray:
+    cursor = cursor_position or _current_cursor_position()
+    if cursor is None:
+        return frame
+
+    cursor_x = cursor[0] - origin[0]
+    cursor_y = cursor[1] - origin[1]
+    height, width = frame.shape[:2]
+    if cursor_x < -24 or cursor_y < -24 or cursor_x >= width or cursor_y >= height:
+        return frame
+
+    image = Image.fromarray(frame)
+    draw = ImageDraw.Draw(image, "RGBA")
+    _draw_cursor_pointer(draw, cursor_x, cursor_y)
+    return np.array(image)
+
+
+def _current_cursor_position() -> tuple[int, int] | None:
+    point = wintypes.POINT()
+    try:
+        if not ctypes.windll.user32.GetCursorPos(ctypes.byref(point)):
+            return None
+    except Exception:
+        return None
+    return int(point.x), int(point.y)
+
+
+def _draw_cursor_pointer(draw: ImageDraw.ImageDraw, x: int, y: int) -> None:
+    points = [
+        (x, y),
+        (x, y + 23),
+        (x + 6, y + 18),
+        (x + 11, y + 29),
+        (x + 16, y + 27),
+        (x + 11, y + 17),
+        (x + 20, y + 17),
+    ]
+    shadow = [(px + 2, py + 2) for px, py in points]
+    draw.polygon(shadow, fill=(0, 0, 0, 80))
+    draw.polygon(points, fill=(255, 255, 255, 245))
+    draw.line([*points, points[0]], fill=(0, 0, 0, 255), width=2, joint="curve")
 
 
 def _draw_arrow_image(

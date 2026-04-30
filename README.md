@@ -5,7 +5,7 @@ Aplicativo desktop para Windows que grava relatos de bug por voz, pode capturar 
 ## O que o app faz
 
 - grava o relato por hotkey global
-- captura a tela localmente com video e frames temporarios
+- captura a tela localmente com GIF e frames temporarios
 - permite anotar com seta usando `Ctrl + arrastar` durante a captura
 - transcreve com Gemini ou OpenAI
 - organiza a saida em um template de bug report
@@ -24,8 +24,8 @@ Aplicativo desktop para Windows que grava relatos de bug por voz, pode capturar 
 1. Pressione `Ctrl+F3` para iniciar a captura de tela local.
 2. Reproduza o bug, fale normalmente e use `Ctrl + arrastar` se quiser destacar algo com uma seta.
 3. Pressione `Ctrl+F3` novamente para finalizar.
-4. O app processa a voz, consolida o video local e copia o bug report final.
-5. Use `Ctrl+Shift+V` para copiar o ultimo video e colar no campo de anexo quando precisar.
+4. O app processa a voz, consolida o GIF local e copia o bug report final.
+5. Foque o campo de anexo e use `Ctrl+Shift+V` para colar o ultimo GIF quando precisar.
 
 ## Requisitos
 
@@ -57,7 +57,7 @@ Variaveis mais importantes:
 
 - `APP_HOTKEY`: inicia e encerra a gravacao por voz
 - `APP_SCREEN_CAPTURE_HOTKEY`: inicia e encerra a captura de tela local
-- `APP_VIDEO_ATTACH_HOTKEY`: copia o ultimo video local para anexo
+- `APP_VIDEO_ATTACH_HOTKEY`: cola o ultimo GIF local no campo de anexo em foco
 - `DEVTOOLS_MCP_ENABLED`: ativa a leitura opcional de contexto tecnico externo
 - `DEVTOOLS_MCP_COMMAND` ou `DEVTOOLS_MCP_CONTEXT_PATH`: apontam para o bridge que fala com Google DevTools MCP
 - `AUTO_STOP_ON_SILENCE`: encerra automaticamente apos silencio

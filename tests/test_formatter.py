@@ -44,7 +44,7 @@ def test_render_prompt_rejects_blank_transcription(tmp_path: Path) -> None:
 def test_render_prompt_includes_capture_context(tmp_path: Path) -> None:
     prompt_path = tmp_path / "prompt.txt"
     prompt_path.write_text("Relato:\n{{TRANSCRICAO}}", encoding="utf-8")
-    video_path = tmp_path / "native_evidence.mp4"
+    video_path = tmp_path / "native_evidence.gif"
     video_path.write_bytes(b"video")
 
     formatter = Formatter(
@@ -116,7 +116,7 @@ def test_inject_evidence_lines_keeps_environment_section_clean() -> None:
         "**Comportamento esperado:**\n- b\n\n"
         "**Passos para reproducao:**\n1. x\n\n"
         "**Evidencias:**\n"
-        "Video da captura e arquivos locais armazenados em C:\\Users\\lucas\\AppData\\Local\\Temp\\bug_voice_reporter_capture_123.\n\n"
+        "GIF da captura e arquivos locais armazenados em C:\\Users\\lucas\\AppData\\Local\\Temp\\bug_voice_reporter_capture_123.\n\n"
         "**Informacoes do ambiente:**\n"
         "- Dispositivo: Nao informado\n"
         "- Versao: Nao informado\n"
@@ -129,12 +129,12 @@ def test_inject_evidence_lines_keeps_environment_section_clean() -> None:
             return "Captura local"
 
         def evidence_lines(self) -> list[str]:
-            return ["Video local disponivel para anexo via CTRL+SHIFT+V."]
+            return ["GIF local disponivel para colagem no anexo via CTRL+SHIFT+V."]
 
     injected = Formatter._inject_evidence_lines(content, StubEvidenceContext())
 
     assert "AppData\\Local\\Temp" not in injected
-    assert "Video local disponivel para anexo via CTRL+SHIFT+V." in injected
+    assert "GIF local disponivel para colagem no anexo via CTRL+SHIFT+V." in injected
     assert "**Informacoes do ambiente:**" in injected
 
 

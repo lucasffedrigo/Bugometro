@@ -151,7 +151,7 @@ def test_devtools_mcp_client_returns_none_for_invalid_payload(tmp_path: Path) ->
 
 
 def test_combined_evidence_context_merges_prompt_blocks_and_files(tmp_path: Path) -> None:
-    video = tmp_path / "native_evidence.mp4"
+    video = tmp_path / "native_evidence.gif"
     video.write_bytes(b"video")
     native_context = NativeCaptureContext(
         target_kind="janela",

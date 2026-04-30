@@ -169,6 +169,7 @@ class BugVoiceReporterApp:
             hotkey=self.config.video_attach_hotkey,
             callback=self.handle_native_video_attach_hotkey,
             debounce_ms=self.config.hotkey_debounce_ms,
+            suppress=True,
         )
 
     def start(self) -> None:
@@ -296,7 +297,7 @@ class BugVoiceReporterApp:
 
                 if self._active_native_capture.stop_requested:
                     self.status_ui.show_status(
-                        "ENCERRAMENTO EM ANDAMENTO\no video ja esta sendo finalizado; aguarde o processamento",
+                        "ENCERRAMENTO EM ANDAMENTO\no GIF ja esta sendo finalizado; aguarde o processamento",
                         persistent=False,
                         duration_ms=3600,
                         kind="hud",
@@ -308,7 +309,7 @@ class BugVoiceReporterApp:
                 self.native_capture_audio_recorder.stop(RecorderStopReason.MANUAL)
                 self._set_status_label("FINALIZING_NATIVE_CAPTURE")
                 self.status_ui.show_status(
-                    "GRAVACAO ENCERRADA\nprocessando voz, video e evidencias locais",
+                    "GRAVACAO ENCERRADA\nprocessando voz, GIF e evidencias locais",
                     persistent=True,
                     kind="processing",
                 )
@@ -329,23 +330,23 @@ class BugVoiceReporterApp:
             if video_path is None or not video_path.exists():
                 if active_native is not None and active_native.stop_requested:
                     message = (
-                        "VIDEO AINDA EM PREPARO\na captura terminou; aguarde a finalizacao"
+                        "GIF AINDA EM PREPARO\na captura terminou; aguarde a finalizacao"
                     )
                 elif active_native is not None:
                     message = (
-                        f"VIDEO AINDA NAO DISPONIVEL\na captura esta em andamento; finalize com {self._format_hotkey_label(self.config.screen_capture_hotkey)}"
+                        f"GIF AINDA NAO DISPONIVEL\na captura esta em andamento; finalize com {self._format_hotkey_label(self.config.screen_capture_hotkey)}"
                     )
                 elif processing_now:
                     message = (
-                        "VIDEO AINDA EM PROCESSAMENTO\naguarde a analise terminar antes de usar CTRL+SHIFT+V"
+                        "GIF AINDA EM PROCESSAMENTO\naguarde a analise terminar antes de colar com CTRL+SHIFT+V"
                     )
                 elif current_state == AppStatus.COPIED:
                     message = (
-                        "ULTIMO FLUXO SEM VIDEO VALIDO\nrepita a captura nativa para gerar uma nova evidencia"
+                        "ULTIMO FLUXO SEM GIF VALIDO\nrepita a captura nativa para gerar uma nova evidencia"
                     )
                 else:
                     message = (
-                        f"NENHUM VIDEO PARA COLAR\ninicie uma captura nativa com {self._format_hotkey_label(self.config.screen_capture_hotkey)}"
+                        f"NENHUM GIF PARA COLAR\ninicie uma captura nativa com {self._format_hotkey_label(self.config.screen_capture_hotkey)}"
                     )
                 self.status_ui.show_status(
                     message,
@@ -356,21 +357,41 @@ class BugVoiceReporterApp:
                 return
 
             self.clipboard.copy_files([video_path])
+            self._paste_clipboard_after_hotkey_release(self.config.video_attach_hotkey)
             self.status_ui.show_status(
-                "VIDEO COPIADO\nagora use CTRL+V no campo de anexo",
+                "COLANDO GIF\nmantenha o campo de anexo em foco",
                 persistent=False,
                 duration_ms=3600,
                 kind="success",
             )
             self.sound_notifier.play_success()
         except Exception:
-            self.logger.exception("Falha ao copiar o video nativo para o clipboard.")
+            self.logger.exception("Falha ao colar o GIF nativo pelo clipboard.")
             self.status_ui.show_status(
-                "VIDEO INDISPONIVEL\na evidencia nao foi encontrada para colagem",
+                "GIF INDISPONIVEL\na evidencia nao foi encontrada para colagem",
                 persistent=False,
                 duration_ms=2400,
                 kind="error",
             )
+
+    def _paste_clipboard_after_hotkey_release(self, hotkey: str) -> None:
+        threading.Thread(
+            target=self._paste_clipboard_worker,
+            args=(hotkey,),
+            name="native-gif-paste",
+            daemon=True,
+        ).start()
+
+    def _paste_clipboard_worker(self, hotkey: str) -> None:
+        keys = [segment.strip().lower() for segment in hotkey.split("+") if segment.strip()]
+        deadline = time.monotonic() + 0.8
+        while time.monotonic() < deadline:
+            if not any(keyboard.is_pressed(key) for key in keys):
+                break
+            time.sleep(0.03)
+
+        time.sleep(0.08)
+        keyboard.send("ctrl+v")
 
     def _start_native_capture(self) -> None:
         try:
@@ -456,7 +477,7 @@ class BugVoiceReporterApp:
                 )
 
             self.status_ui.show_status(
-                "PROCESSANDO CAPTURA NATIVA\ntranscrevendo a voz e consolidando o video local",
+                "PROCESSANDO CAPTURA NATIVA\ntranscrevendo a voz e consolidando o GIF local",
                 persistent=True,
                 kind="processing",
             )
@@ -496,7 +517,7 @@ class BugVoiceReporterApp:
                 self._active_native_capture = None
 
             self.status_ui.show_status(
-                "BUG REPORT PRONTO\nCtrl+V cola o texto final\nCtrl+Shift+V copia o video para colar no proximo campo de anexo",
+                "BUG REPORT PRONTO\nCtrl+V cola o texto final\nCtrl+Shift+V cola o GIF no campo de anexo",
                 persistent=False,
                 duration_ms=5200,
                 kind="success",
@@ -926,7 +947,7 @@ class BugVoiceReporterApp:
             + f"GRAVAR TELA = {self._format_hotkey_label(self.config.screen_capture_hotkey)}\n"
             "ANOTAR SETA = CTRL + arrastar\n"
             "COLAR TEXTO = CTRL + V\n"
-            f"COPIAR VIDEO = {self._format_hotkey_label(self.config.video_attach_hotkey)}\n"
+            f"COLAR GIF = {self._format_hotkey_label(self.config.video_attach_hotkey)}\n"
             f"{privacy_note}"
         )
 

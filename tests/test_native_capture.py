@@ -1,7 +1,13 @@
 from pathlib import Path
 
 from app.formatter import Formatter
-from app.native_capture import AnnotationModel, NativeCaptureContext
+import numpy as np
+
+from app.native_capture import (
+    AnnotationModel,
+    NativeCaptureContext,
+    _draw_cursor_on_frame,
+)
 
 
 def test_annotation_model_keeps_stroke_visible_for_hold_window() -> None:
@@ -24,8 +30,33 @@ def test_annotation_model_ignores_click_without_drag() -> None:
     assert model.completed_count == 0
 
 
+def test_draw_cursor_on_frame_renders_pointer_at_relative_position() -> None:
+    frame = np.zeros((48, 48, 3), dtype=np.uint8)
+
+    rendered = _draw_cursor_on_frame(
+        frame,
+        origin=(100, 200),
+        cursor_position=(110, 212),
+    )
+
+    assert rendered.sum() > 0
+    assert rendered.max() >= 245
+
+
+def test_draw_cursor_on_frame_ignores_cursor_outside_capture() -> None:
+    frame = np.zeros((48, 48, 3), dtype=np.uint8)
+
+    rendered = _draw_cursor_on_frame(
+        frame,
+        origin=(100, 200),
+        cursor_position=(10, 20),
+    )
+
+    assert np.array_equal(rendered, frame)
+
+
 def test_native_capture_context_exposes_prompt_and_files(tmp_path: Path) -> None:
-    video = tmp_path / "native_evidence.mp4"
+    video = tmp_path / "native_evidence.gif"
     frame = tmp_path / "frame_01.jpg"
     video.write_bytes(b"video")
     frame.write_bytes(b"frame")
@@ -60,7 +91,7 @@ def test_formatter_injects_native_capture_evidence(tmp_path: Path) -> None:
         prompt_path=prompt_path,
         timeout_seconds=10,
     )
-    video = tmp_path / "native_evidence.mp4"
+    video = tmp_path / "native_evidence.gif"
     video.write_bytes(b"video")
     context = NativeCaptureContext(
         target_kind="desktop",
