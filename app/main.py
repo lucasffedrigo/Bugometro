@@ -16,6 +16,7 @@ from app.formatter import Formatter, FormattingError
 from app.hotkey import GlobalHotkeyManager
 from app.logger import setup_logging
 from app.native_capture import NativeScreenRecorder, NativeScreenRecordingResult
+from app.output_validator import extract_title
 from app.recorder import AudioRecorder, RecorderStopReason, RecordingResult
 from app.silence_detector import SilenceDetector
 from app.single_instance import SingleInstanceGuard
@@ -65,6 +66,7 @@ class BugVoiceReporterApp:
         self._last_native_video_path: Path | None = None
         self._screen_capture_shortcuts_enabled = True
         self._screen_capture_shortcuts_error: str | None = None
+        self._last_formatted_report: str = ""
 
         self._build_runtime_components()
         self.tray = SystemTrayController(
@@ -165,6 +167,12 @@ class BugVoiceReporterApp:
             callback=self.handle_native_capture_hotkey,
             debounce_ms=self.config.hotkey_debounce_ms,
         )
+        self.title_paste_hotkey = GlobalHotkeyManager(
+            hotkey=self.config.title_paste_hotkey,
+            callback=self.handle_title_paste_hotkey,
+            debounce_ms=self.config.hotkey_debounce_ms,
+            suppress=True,
+        )
         self.video_attach_hotkey = GlobalHotkeyManager(
             hotkey=self.config.video_attach_hotkey,
             callback=self.handle_native_video_attach_hotkey,
@@ -192,15 +200,17 @@ class BugVoiceReporterApp:
         if self._screen_capture_shortcuts_enabled:
             self.screen_capture_hotkey.start()
             self.video_attach_hotkey.start()
+        self.title_paste_hotkey.start()
         self.tray.start()
         self._started = True
         self._set_status_label(AppStatus.IDLE.value)
         self.logger.info(
-            "bug-voice-reporter iniciado. Hotkeys toggle=%s restart=%s captura_tela=%s anexar=%s providers transcrição=%s formatação=%s",
+            "bug-voice-reporter iniciado. Hotkeys toggle=%s restart=%s captura_tela=%s anexar=%s titulo=%s providers transcrição=%s formatação=%s",
             self.config.hotkey,
             self.config.restart_hotkey or "desativado",
             self.config.screen_capture_hotkey,
             self.config.video_attach_hotkey,
+            self.config.title_paste_hotkey,
             self.config.transcription_provider,
             self.config.formatter_provider,
         )
@@ -236,6 +246,7 @@ class BugVoiceReporterApp:
             self.restart_hotkey.stop()
         self.screen_capture_hotkey.stop()
         self.video_attach_hotkey.stop()
+        self.title_paste_hotkey.stop()
         self.tray.stop()
         self.clipboard.stop()
         self.status_ui.stop()
@@ -383,15 +394,18 @@ class BugVoiceReporterApp:
         ).start()
 
     def _paste_clipboard_worker(self, hotkey: str) -> None:
+        self._wait_for_hotkey_release(hotkey)
+        keyboard.send("ctrl+v")
+
+    @staticmethod
+    def _wait_for_hotkey_release(hotkey: str) -> None:
         keys = [segment.strip().lower() for segment in hotkey.split("+") if segment.strip()]
         deadline = time.monotonic() + 0.8
         while time.monotonic() < deadline:
             if not any(keyboard.is_pressed(key) for key in keys):
                 break
             time.sleep(0.03)
-
         time.sleep(0.08)
-        keyboard.send("ctrl+v")
 
     def _start_native_capture(self) -> None:
         try:
@@ -499,6 +513,7 @@ class BugVoiceReporterApp:
                 transcription,
                 evidence_context=evidence_context,
             )
+            self._last_formatted_report = formatted
             self.storage.save_last_output(formatted)
             file_bundle = (
                 evidence_context.evidence_file_paths()
@@ -517,7 +532,7 @@ class BugVoiceReporterApp:
                 self._active_native_capture = None
 
             self.status_ui.show_status(
-                "BUG REPORT PRONTO\nCtrl+V cola o texto final\nCtrl+Shift+V cola o GIF no campo de anexo",
+                "BUG REPORT PRONTO\nCtrl+\" cola apenas o titulo\nCtrl+V cola o texto final\nCtrl+Shift+V cola o GIF no campo de anexo",
                 persistent=False,
                 duration_ms=5200,
                 kind="success",
@@ -744,6 +759,7 @@ class BugVoiceReporterApp:
                 transcription,
                 evidence_context=devtools_context,
             )
+            self._last_formatted_report = formatted
             self.storage.save_last_output(formatted)
             self.clipboard.copy_payload(formatted, [])
 
@@ -751,9 +767,12 @@ class BugVoiceReporterApp:
                 self.state.transition(AppStatus.COPIED)
                 self._set_status_label(AppStatus.COPIED.value)
 
-            final_message = "BUG REPORT PRONTO\nCtrl+V cola o texto final"
+            final_message = "BUG REPORT PRONTO\nCtrl+\" cola apenas o titulo\nCtrl+V cola o texto final"
             if result.reason == RecorderStopReason.MAX_DURATION:
-                final_message = "TEMPO MAXIMO ATINGIDO\no texto final ja esta pronto no Ctrl+V"
+                final_message = (
+                    "TEMPO MAXIMO ATINGIDO\nCtrl+\" cola apenas o titulo\n"
+                    "o texto final ja esta pronto no Ctrl+V"
+                )
 
             self.status_ui.show_status(
                 final_message,
@@ -798,6 +817,45 @@ class BugVoiceReporterApp:
             kind="error",
         )
         self._schedule_idle_reset()
+
+    def handle_title_paste_hotkey(self) -> None:
+        try:
+            title = extract_title(self._last_formatted_report).strip()
+            if not title:
+                self.status_ui.show_status(
+                    "SEM TITULO PARA COLAR\ngere um bug report antes de usar esse atalho",
+                    persistent=False,
+                    duration_ms=2400,
+                    kind="error",
+                )
+                return
+            self._write_text_after_hotkey_release(self.config.title_paste_hotkey, title)
+            self.status_ui.show_status(
+                "TITULO COLADO\nCtrl+V continua com o bug report completo",
+                persistent=False,
+                duration_ms=1500,
+                kind="hud",
+            )
+        except Exception:
+            self.logger.exception("Falha ao tratar a hotkey de colar titulo.")
+            self.status_ui.show_status(
+                "FALHA AO COLAR TITULO\ntente novamente no campo de titulo",
+                persistent=False,
+                duration_ms=2200,
+                kind="error",
+            )
+
+    def _write_text_after_hotkey_release(self, hotkey: str, text: str) -> None:
+        threading.Thread(
+            target=self._write_text_worker,
+            args=(hotkey, text),
+            name="title-paste",
+            daemon=True,
+        ).start()
+
+    def _write_text_worker(self, hotkey: str, text: str) -> None:
+        self._wait_for_hotkey_release(hotkey)
+        keyboard.write(text)
 
     def _schedule_idle_reset(self, delay_seconds: float = 2.8) -> None:
         self._cancel_idle_reset()
@@ -895,6 +953,7 @@ class BugVoiceReporterApp:
         configured = {
             "APP_SCREEN_CAPTURE_HOTKEY": self.config.screen_capture_hotkey,
             "APP_VIDEO_ATTACH_HOTKEY": self.config.video_attach_hotkey,
+            "APP_TITLE_PASTE_HOTKEY": self.config.title_paste_hotkey,
         }
         seen: dict[str, str] = {}
         for key, value in configured.items():
@@ -946,6 +1005,7 @@ class BugVoiceReporterApp:
             )
             + f"GRAVAR TELA = {self._format_hotkey_label(self.config.screen_capture_hotkey)}\n"
             "ANOTAR SETA = CTRL + arrastar\n"
+            f"COLAR TITULO = {self._format_hotkey_label(self.config.title_paste_hotkey)}\n"
             "COLAR TEXTO = CTRL + V\n"
             f"COLAR GIF = {self._format_hotkey_label(self.config.video_attach_hotkey)}\n"
             f"{privacy_note}"

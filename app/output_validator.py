@@ -45,7 +45,16 @@ def extract_title(text: str) -> str:
     lines = [line.strip() for line in text.splitlines()]
 
     for index, line in enumerate(lines):
-        if _normalize(line).lower().rstrip(":") == "titulo":
+        normalized = _normalize(line).lower()
+        if normalized.startswith("titulo:"):
+            inline_title = line.split(":", 1)[1].strip()
+            if inline_title:
+                return inline_title
+            for next_line in lines[index + 1 :]:
+                if next_line:
+                    return next_line
+            return ""
+        if normalized.rstrip(":") == "titulo":
             for next_line in lines[index + 1 :]:
                 if next_line:
                     return next_line

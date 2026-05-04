@@ -18,6 +18,7 @@ Aplicativo desktop para Windows que grava relatos de bug por voz, pode capturar 
 1. Pressione `Ctrl+F2` para iniciar a gravacao.
 2. Pressione `Ctrl+F2` novamente para encerrar.
 3. O app transcreve, formata e copia o bug report final.
+4. Use `Ctrl+"` para colar somente o titulo no campo de assunto e depois `Ctrl+V` para colar o restante.
 
 ### Voz + captura de tela
 
@@ -56,6 +57,7 @@ OPENAI_API_KEY=your_openai_api_key_here
 Variaveis mais importantes:
 
 - `APP_HOTKEY`: inicia e encerra a gravacao por voz
+- `APP_TITLE_PASTE_HOTKEY`: cola apenas o titulo do ultimo bug report formatado
 - `APP_SCREEN_CAPTURE_HOTKEY`: inicia e encerra a captura de tela local
 - `APP_VIDEO_ATTACH_HOTKEY`: cola o ultimo GIF local no campo de anexo em foco
 - `DEVTOOLS_MCP_ENABLED`: ativa a leitura opcional de contexto tecnico externo

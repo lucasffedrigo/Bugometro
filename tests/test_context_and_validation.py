@@ -77,3 +77,9 @@ def test_extract_title_reads_first_plain_line() -> None:
     assert extract_title(text) == (
         "[Checkout] usuário finaliza compra e sistema retorna erro de pagamento"
     )
+
+
+def test_extract_title_removes_inline_title_label() -> None:
+    text = "Titulo: [Checkout] Botao finalizar nao responde\n\nResumo:\nFalha."
+
+    assert extract_title(text) == "[Checkout] Botao finalizar nao responde"
