@@ -7,6 +7,37 @@ import tkinter as tk
 from ctypes import wintypes
 from dataclasses import dataclass
 
+
+def _enable_process_dpi_awareness() -> None:
+    try:
+        user32 = ctypes.WinDLL("user32", use_last_error=True)
+        set_dpi_context = getattr(user32, "SetProcessDpiAwarenessContext", None)
+        if set_dpi_context is not None:
+            set_dpi_context.argtypes = [ctypes.c_void_p]
+            set_dpi_context.restype = wintypes.BOOL
+            per_monitor_v2 = ctypes.c_void_p(-4)
+            if set_dpi_context(per_monitor_v2):
+                return
+    except Exception:
+        pass
+
+    try:
+        shcore = ctypes.WinDLL("shcore", use_last_error=True)
+        shcore.SetProcessDpiAwareness.argtypes = [ctypes.c_int]
+        shcore.SetProcessDpiAwareness.restype = ctypes.c_long
+        if shcore.SetProcessDpiAwareness(2) == 0:
+            return
+    except Exception:
+        pass
+
+    try:
+        ctypes.windll.user32.SetProcessDPIAware()
+    except Exception:
+        pass
+
+
+_enable_process_dpi_awareness()
+
 _USER32 = ctypes.WinDLL("user32", use_last_error=True)
 _USER32.GetAncestor.argtypes = [wintypes.HWND, ctypes.c_uint]
 _USER32.GetAncestor.restype = wintypes.HWND
@@ -226,9 +257,7 @@ class StatusNotifier:
                 window.update_idletasks()
                 width = window.winfo_reqwidth()
                 height = window.winfo_reqheight()
-                left, top, right, bottom = _work_area_rect()
-                x = right - width - 20
-                y = bottom - height - 20
+                x, y, width, height = _bottom_right_bounds(width, height)
                 if hwnd is None:
                     window.geometry(f"{width}x{height}+{x}+{y}")
                     if show:
@@ -345,6 +374,22 @@ def _work_area_rect() -> tuple[int, int, int, int]:
     except Exception:
         pass
     return 0, 0, 1920, 1080
+
+
+def _bottom_right_bounds(
+    width: int,
+    height: int,
+    *,
+    work_area: tuple[int, int, int, int] | None = None,
+    margin: int = 20,
+) -> tuple[int, int, int, int]:
+    left, top, right, bottom = work_area or _work_area_rect()
+    safe_width = max(1, int(width))
+    safe_height = max(1, int(height))
+    safe_margin = max(0, int(margin))
+    x = max(left + safe_margin, right - safe_width - safe_margin)
+    y = max(top + safe_margin, bottom - safe_height - safe_margin)
+    return x, y, safe_width, safe_height
 
 
 class _MonitorInfo(ctypes.Structure):

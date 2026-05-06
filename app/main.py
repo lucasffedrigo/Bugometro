@@ -5,6 +5,7 @@ import os
 import signal
 import threading
 import time
+from concurrent.futures import Future, ThreadPoolExecutor
 from ctypes import wintypes
 from dataclasses import dataclass
 from datetime import datetime
@@ -36,6 +37,17 @@ class PendingNativeCapture:
     finalized: bool = False
     audio_result: RecordingResult | None = None
     screen_result: NativeScreenRecordingResult | None = None
+    transcription_future: Future[str] | None = None
+    devtools_future: Future[object | None] | None = None
+
+
+@dataclass
+class PendingVoiceGifCapture:
+    started_at: datetime
+    stop_requested: bool = False
+    screen_result: NativeScreenRecordingResult | None = None
+    transcription_future: Future[str] | None = None
+    devtools_future: Future[object | None] | None = None
 
 
 class BugVoiceReporterApp:
@@ -63,10 +75,16 @@ class BugVoiceReporterApp:
         self._windows_ctrl_handler = None
         self._shutdown_event = threading.Event()
         self._active_native_capture: PendingNativeCapture | None = None
+        self._active_voice_gif_capture: PendingVoiceGifCapture | None = None
+        self._pending_voice_audio_result: RecordingResult | None = None
         self._last_native_video_path: Path | None = None
         self._screen_capture_shortcuts_enabled = True
         self._screen_capture_shortcuts_error: str | None = None
         self._last_formatted_report: str = ""
+        self._native_prework_executor = ThreadPoolExecutor(
+            max_workers=2,
+            thread_name_prefix="native-prework",
+        )
 
         self._build_runtime_components()
         self.tray = SystemTrayController(
@@ -167,6 +185,11 @@ class BugVoiceReporterApp:
             callback=self.handle_native_capture_hotkey,
             debounce_ms=self.config.hotkey_debounce_ms,
         )
+        self.voice_gif_hotkey = GlobalHotkeyManager(
+            hotkey=self.config.voice_gif_hotkey,
+            callback=self.handle_voice_gif_hotkey,
+            debounce_ms=self.config.hotkey_debounce_ms,
+        )
         self.title_paste_hotkey = GlobalHotkeyManager(
             hotkey=self.config.title_paste_hotkey,
             callback=self.handle_title_paste_hotkey,
@@ -199,16 +222,18 @@ class BugVoiceReporterApp:
             self.restart_hotkey.start()
         if self._screen_capture_shortcuts_enabled:
             self.screen_capture_hotkey.start()
+            self.voice_gif_hotkey.start()
             self.video_attach_hotkey.start()
         self.title_paste_hotkey.start()
         self.tray.start()
         self._started = True
         self._set_status_label(AppStatus.IDLE.value)
         self.logger.info(
-            "bug-voice-reporter iniciado. Hotkeys toggle=%s restart=%s captura_tela=%s anexar=%s titulo=%s providers transcrição=%s formatação=%s",
+            "bug-voice-reporter iniciado. Hotkeys toggle=%s restart=%s captura_tela=%s gif_na_voz=%s anexar=%s titulo=%s providers transcrição=%s formatação=%s",
             self.config.hotkey,
             self.config.restart_hotkey or "desativado",
             self.config.screen_capture_hotkey,
+            self.config.voice_gif_hotkey,
             self.config.video_attach_hotkey,
             self.config.title_paste_hotkey,
             self.config.transcription_provider,
@@ -238,6 +263,8 @@ class BugVoiceReporterApp:
         if self._active_native_capture is not None:
             self.native_capture_audio_recorder.stop()
             self.native_screen_recorder.stop()
+        if self._active_voice_gif_capture is not None:
+            self.native_screen_recorder.stop()
 
         self._cancel_restart_countdown()
         self._cancel_idle_reset()
@@ -245,10 +272,12 @@ class BugVoiceReporterApp:
         if self.restart_hotkey is not None:
             self.restart_hotkey.stop()
         self.screen_capture_hotkey.stop()
+        self.voice_gif_hotkey.stop()
         self.video_attach_hotkey.stop()
         self.title_paste_hotkey.stop()
         self.tray.stop()
         self.clipboard.stop()
+        self._native_prework_executor.shutdown(wait=False, cancel_futures=True)
         self.status_ui.stop()
         self._started = False
         self._single_instance.release()
@@ -316,6 +345,7 @@ class BugVoiceReporterApp:
                     return
 
                 self._active_native_capture.stop_requested = True
+                self._start_native_prework_locked(self._active_native_capture)
                 self.native_screen_recorder.stop()
                 self.native_capture_audio_recorder.stop(RecorderStopReason.MANUAL)
                 self._set_status_label("FINALIZING_NATIVE_CAPTURE")
@@ -385,6 +415,77 @@ class BugVoiceReporterApp:
                 kind="error",
             )
 
+    def handle_voice_gif_hotkey(self) -> None:
+        try:
+            with self._lock:
+                self.logger.info(
+                    "Hotkey de GIF durante voz acionada no estado %s (gif_ativo=%s stop_requested=%s)",
+                    self.state.current,
+                    self._active_voice_gif_capture is not None,
+                    self._active_voice_gif_capture.stop_requested
+                    if self._active_voice_gif_capture is not None
+                    else False,
+                )
+                self._cancel_idle_reset()
+
+                if self.state.is_processing:
+                    self.logger.info("Hotkey de GIF durante voz ignorada porque o app esta processando.")
+                    return
+                if self._active_native_capture is not None:
+                    self.status_ui.show_status(
+                        "CAPTURA NATIVA EM ANDAMENTO\nfinalize esse fluxo antes de alternar o GIF da voz",
+                        persistent=False,
+                        duration_ms=3000,
+                        kind="error",
+                    )
+                    return
+                if not self.state.is_recording_active or not self.recorder.is_recording:
+                    self.status_ui.show_status(
+                        f"VOZ NAO INICIADA\ncomece o relato com {self._format_hotkey_label(self.config.hotkey)} antes de gravar o GIF incremental",
+                        persistent=False,
+                        duration_ms=3600,
+                        kind="error",
+                    )
+                    return
+
+                if self._active_voice_gif_capture is None:
+                    self.native_screen_recorder.start()
+                    self._active_voice_gif_capture = PendingVoiceGifCapture(
+                        started_at=datetime.now()
+                    )
+                    self._last_native_video_path = None
+                    self._set_status_label("VOICE_WITH_GIF")
+                    self.status_ui.show_status(
+                        "GIF INCREMENTAL INICIADO\ncontinue explicando o bug; finalize o GIF com "
+                        f"{self._format_hotkey_label(self.config.voice_gif_hotkey)} ou encerre tudo com {self._format_hotkey_label(self.config.hotkey)}",
+                        persistent=True,
+                        kind="recording",
+                    )
+                    self.sound_notifier.play_start()
+                    return
+
+                if self._active_voice_gif_capture.stop_requested:
+                    self.status_ui.show_status(
+                        "GIF FINALIZANDO\na voz continua gravando enquanto o arquivo e preparado",
+                        persistent=False,
+                        duration_ms=2800,
+                        kind="hud",
+                    )
+                    return
+
+                self._active_voice_gif_capture.stop_requested = True
+                self._start_voice_gif_prework_locked(self._active_voice_gif_capture)
+                self.native_screen_recorder.stop()
+                self.status_ui.show_status(
+                    "GIF ENCERRADO\ncontinue falando; finalize o audio com "
+                    f"{self._format_hotkey_label(self.config.hotkey)}",
+                    persistent=True,
+                    kind="recording",
+                )
+        except Exception:
+            self.logger.exception("Falha ao tratar a hotkey de GIF durante voz.")
+            self._move_to_error("Nao foi possivel controlar o GIF incremental.")
+
     def _paste_clipboard_after_hotkey_release(self, hotkey: str) -> None:
         threading.Thread(
             target=self._paste_clipboard_worker,
@@ -404,8 +505,8 @@ class BugVoiceReporterApp:
         while time.monotonic() < deadline:
             if not any(keyboard.is_pressed(key) for key in keys):
                 break
-            time.sleep(0.03)
-        time.sleep(0.08)
+            time.sleep(0.01)
+        time.sleep(0.02)
 
     def _start_native_capture(self) -> None:
         try:
@@ -444,18 +545,125 @@ class BugVoiceReporterApp:
                 self.storage.cleanup_file(result.path)
                 return
             capture.audio_result = result
+            self._start_native_prework_locked(capture)
         self._maybe_finalize_native_capture()
 
     def _on_native_capture_screen_finished(
         self,
         result: NativeScreenRecordingResult,
     ) -> None:
+        pending_voice_audio: RecordingResult | None = None
+        transcription_future: Future[str] | None = None
+        devtools_future: Future[object | None] | None = None
+        handled_native_capture = False
         with self._lock:
             capture = self._active_native_capture
             if capture is None:
-                return
-            capture.screen_result = result
-        self._maybe_finalize_native_capture()
+                voice_gif = self._active_voice_gif_capture
+                if voice_gif is None:
+                    return
+                voice_gif.screen_result = result
+                self._start_voice_gif_prework_locked(voice_gif)
+                if result.reason != "failed" and result.video_path is not None:
+                    self._last_native_video_path = result.video_path
+                pending_audio = self._pending_voice_audio_result
+                if pending_audio is not None:
+                    self._start_voice_gif_prework_locked(voice_gif, pending_audio)
+                    transcription_future = voice_gif.transcription_future
+                    devtools_future = voice_gif.devtools_future
+                    self._pending_voice_audio_result = None
+                    self._active_voice_gif_capture = None
+                    pending_voice_audio = pending_audio
+                else:
+                    if result.reason == "failed":
+                        self._active_voice_gif_capture = None
+                        self.status_ui.show_status(
+                            "GIF INDISPONIVEL\na voz continua gravando normalmente",
+                            persistent=True,
+                            kind="recording",
+                        )
+                    else:
+                        self.status_ui.show_status(
+                            "GIF PRONTO\ncontinue falando; finalize o audio com "
+                            f"{self._format_hotkey_label(self.config.hotkey)}",
+                            persistent=True,
+                            kind="recording",
+                        )
+                    return
+            else:
+                capture.screen_result = result
+                if result.reason != "failed" and result.video_path is not None:
+                    self._last_native_video_path = result.video_path
+                self._start_native_prework_locked(capture)
+                handled_native_capture = True
+        if handled_native_capture:
+            self._maybe_finalize_native_capture()
+        if pending_voice_audio is not None:
+            self._start_voice_processing(
+                pending_voice_audio,
+                result,
+                transcription_future=transcription_future,
+                devtools_future=devtools_future,
+            )
+
+    def _start_native_prework_locked(self, capture: PendingNativeCapture) -> None:
+        if (
+            capture.audio_result is not None
+            and capture.transcription_future is None
+            and capture.audio_result.reason != RecorderStopReason.FAILED
+            and capture.audio_result.path is not None
+        ):
+            audio_path = capture.audio_result.path
+            capture.transcription_future = self._native_prework_executor.submit(
+                self._transcribe_native_capture_audio,
+                audio_path,
+            )
+            self.logger.info(
+                "Transcricao da captura nativa iniciada em paralelo ao fechamento do GIF."
+            )
+
+        if capture.stop_requested and capture.devtools_future is None:
+            capture.devtools_future = self._native_prework_executor.submit(
+                self.devtools_mcp_client.collect_context
+            )
+
+    def _start_voice_gif_prework_locked(
+        self,
+        capture: PendingVoiceGifCapture,
+        audio_result: RecordingResult | None = None,
+    ) -> None:
+        if (
+            audio_result is not None
+            and capture.transcription_future is None
+            and audio_result.reason != RecorderStopReason.FAILED
+            and audio_result.path is not None
+        ):
+            capture.transcription_future = self._native_prework_executor.submit(
+                self._transcribe_native_capture_audio,
+                audio_result.path,
+            )
+            self.logger.info(
+                "Transcricao da voz iniciada em paralelo ao fechamento do GIF incremental."
+            )
+
+        if capture.devtools_future is None and (
+            capture.stop_requested
+            or capture.screen_result is not None
+            or audio_result is not None
+        ):
+            capture.devtools_future = self._native_prework_executor.submit(
+                self.devtools_mcp_client.collect_context
+            )
+
+    def _transcribe_native_capture_audio(self, audio_path: Path) -> str:
+        started_at = time.perf_counter()
+        transcription = self.transcriber.transcribe(audio_path)
+        self.storage.save_last_transcription(transcription)
+        self.logger.info(
+            "Transcricao da captura nativa concluida em %.2fs.",
+            time.perf_counter() - started_at,
+        )
+        return transcription
 
     def _maybe_finalize_native_capture(self) -> None:
         with self._lock:
@@ -464,13 +672,16 @@ class BugVoiceReporterApp:
                 return
             if capture.audio_result is None or capture.screen_result is None:
                 return
+            self._start_native_prework_locked(capture)
             capture.finalized = True
             audio_result = capture.audio_result
             screen_result = capture.screen_result
+            transcription_future = capture.transcription_future
+            devtools_future = capture.devtools_future
 
         threading.Thread(
             target=self._process_native_capture,
-            args=(audio_result, screen_result),
+            args=(audio_result, screen_result, transcription_future, devtools_future),
             name="native-capture-processor",
             daemon=True,
         ).start()
@@ -479,11 +690,15 @@ class BugVoiceReporterApp:
         self,
         audio_result: RecordingResult,
         screen_result: NativeScreenRecordingResult,
+        transcription_future: Future[str] | None = None,
+        devtools_future: Future[object | None] | None = None,
     ) -> None:
         audio_path = audio_result.path
         try:
             if audio_result.reason == RecorderStopReason.FAILED:
                 raise RuntimeError("Nao foi possivel concluir a gravacao de voz da captura nativa.")
+            if audio_path is None:
+                raise RuntimeError("Arquivo de audio da captura nativa nao foi gerado.")
             if screen_result.reason == "failed" or screen_result.video_path is None:
                 raise RuntimeError(
                     screen_result.error_message
@@ -491,18 +706,24 @@ class BugVoiceReporterApp:
                 )
 
             self.status_ui.show_status(
-                "PROCESSANDO CAPTURA NATIVA\ntranscrevendo a voz e consolidando o GIF local",
+                "PROCESSANDO CAPTURA NATIVA\nfinalizando voz, GIF e evidencias locais em paralelo",
                 persistent=True,
                 kind="processing",
             )
-            transcription = self.transcriber.transcribe(audio_path)
-            self.storage.save_last_transcription(transcription)
+            if transcription_future is not None:
+                transcription = transcription_future.result()
+            else:
+                transcription = self._transcribe_native_capture_audio(audio_path)
 
             with self._lock:
                 self._set_status_label(AppStatus.PROCESSING_FORMATTING.value)
 
             context = screen_result.to_context()
-            devtools_context = self.devtools_mcp_client.collect_context()
+            devtools_context = (
+                devtools_future.result()
+                if devtools_future is not None
+                else self.devtools_mcp_client.collect_context()
+            )
             if devtools_context is not None:
                 self.logger.info(
                     "Contexto tecnico adicional do DevTools MCP anexado ao fluxo da captura nativa."
@@ -590,11 +811,22 @@ class BugVoiceReporterApp:
                     return
 
                 if self.state.current in {AppStatus.RECORDING, AppStatus.SILENCE_COUNTDOWN}:
+                    if (
+                        self._active_voice_gif_capture is not None
+                        and not self._active_voice_gif_capture.stop_requested
+                    ):
+                        self._active_voice_gif_capture.stop_requested = True
+                        self._start_voice_gif_prework_locked(
+                            self._active_voice_gif_capture
+                        )
+                        self.native_screen_recorder.stop()
                     if self.recorder.stop(RecorderStopReason.MANUAL):
                         self.state.transition(AppStatus.PROCESSING_TRANSCRIPTION)
                         self._set_status_label(AppStatus.PROCESSING_TRANSCRIPTION.value)
                         self.status_ui.show_status(
-                            "RELATO ENCERRADO\ntranscrevendo sua fala e montando o bug report",
+                            "RELATO ENCERRADO\nfinalizando audio e GIF antes de montar o bug report"
+                            if self._active_voice_gif_capture is not None
+                            else "RELATO ENCERRADO\ntranscrevendo sua fala e montando o bug report",
                             persistent=True,
                             kind="processing",
                         )
@@ -621,6 +853,14 @@ class BugVoiceReporterApp:
                         "CAPTURA DE TELA EM ANDAMENTO\nreinicio de voz fica bloqueado enquanto a evidencia estiver ativa",
                         persistent=False,
                         duration_ms=1800,
+                        kind="error",
+                    )
+                    return
+                if self._active_voice_gif_capture is not None:
+                    self.status_ui.show_status(
+                        "GIF INCREMENTAL EM ANDAMENTO\nfinalize ou encerre o relato antes de reiniciar",
+                        persistent=False,
+                        duration_ms=2400,
                         kind="error",
                     )
                     return
@@ -665,6 +905,8 @@ class BugVoiceReporterApp:
     def _start_voice_recording(self) -> None:
         try:
             self._cancel_restart_countdown()
+            self._active_voice_gif_capture = None
+            self._pending_voice_audio_result = None
             self.recorder.start()
             self.state.transition(AppStatus.RECORDING)
             self._set_status_label(AppStatus.RECORDING.value)
@@ -714,6 +956,29 @@ class BugVoiceReporterApp:
             if self.state.current in {AppStatus.RECORDING, AppStatus.SILENCE_COUNTDOWN}:
                 self.state.transition(AppStatus.PROCESSING_TRANSCRIPTION)
                 self._set_status_label(AppStatus.PROCESSING_TRANSCRIPTION.value)
+            voice_gif = self._active_voice_gif_capture
+            if voice_gif is not None:
+                if voice_gif.screen_result is None:
+                    self._pending_voice_audio_result = result
+                    if not voice_gif.stop_requested:
+                        voice_gif.stop_requested = True
+                        self.native_screen_recorder.stop()
+                    self._start_voice_gif_prework_locked(voice_gif, result)
+                    self.status_ui.show_status(
+                        "FINALIZANDO GIF\naguarde enquanto o audio e a evidencia sao consolidados",
+                        persistent=True,
+                        kind="processing",
+                    )
+                    return
+                screen_result = voice_gif.screen_result
+                self._start_voice_gif_prework_locked(voice_gif, result)
+                transcription_future = voice_gif.transcription_future
+                devtools_future = voice_gif.devtools_future
+                self._active_voice_gif_capture = None
+            else:
+                screen_result = None
+                transcription_future = None
+                devtools_future = None
 
         if result.reason == RecorderStopReason.SILENCE:
             self.logger.info(
@@ -721,14 +986,34 @@ class BugVoiceReporterApp:
                 self.config.silence_timeout_seconds,
             )
 
+        self._start_voice_processing(
+            result,
+            screen_result,
+            transcription_future=transcription_future,
+            devtools_future=devtools_future,
+        )
+
+    def _start_voice_processing(
+        self,
+        result: RecordingResult,
+        screen_result: NativeScreenRecordingResult | None = None,
+        transcription_future: Future[str] | None = None,
+        devtools_future: Future[object | None] | None = None,
+    ) -> None:
         threading.Thread(
             target=self._process_voice_recording,
-            args=(result,),
+            args=(result, screen_result, transcription_future, devtools_future),
             name="recording-processor",
             daemon=True,
         ).start()
 
-    def _process_voice_recording(self, result: RecordingResult) -> None:
+    def _process_voice_recording(
+        self,
+        result: RecordingResult,
+        screen_result: NativeScreenRecordingResult | None = None,
+        transcription_future: Future[str] | None = None,
+        devtools_future: Future[object | None] | None = None,
+    ) -> None:
         audio_path = result.path
         try:
             self.status_ui.show_status(
@@ -736,8 +1021,16 @@ class BugVoiceReporterApp:
                 persistent=True,
                 kind="processing",
             )
-            transcription = self.transcriber.transcribe(audio_path)
-            self.storage.save_last_transcription(transcription)
+            if audio_path is None:
+                raise ValueError("Arquivo de audio do relato nao foi gerado.")
+            if devtools_future is None:
+                devtools_future = self._native_prework_executor.submit(
+                    self.devtools_mcp_client.collect_context
+                )
+            if transcription_future is not None:
+                transcription = transcription_future.result()
+            else:
+                transcription = self._transcribe_native_capture_audio(audio_path)
 
             with self._lock:
                 self.state.transition(AppStatus.PROCESSING_FORMATTING)
@@ -749,25 +1042,47 @@ class BugVoiceReporterApp:
                 kind="processing",
             )
 
-            devtools_context = self.devtools_mcp_client.collect_context()
+            devtools_context = devtools_future.result()
             if devtools_context is not None:
                 self.logger.info(
                     "Contexto tecnico adicional do DevTools MCP anexado ao fluxo de voz."
                 )
+            evidence_context = devtools_context
+            if (
+                screen_result is not None
+                and screen_result.reason != "failed"
+                and screen_result.video_path is not None
+            ):
+                native_context = screen_result.to_context()
+                evidence_context = (
+                    combine_evidence_contexts(native_context, devtools_context)
+                    or native_context
+                )
+                self._last_native_video_path = native_context.video_path
 
             formatted = self.formatter.format_bug_report(
                 transcription,
-                evidence_context=devtools_context,
+                evidence_context=evidence_context,
             )
             self._last_formatted_report = formatted
             self.storage.save_last_output(formatted)
-            self.clipboard.copy_payload(formatted, [])
+            file_bundle = (
+                evidence_context.evidence_file_paths()
+                if evidence_context is not None and self.config.clipboard_include_files
+                else []
+            )
+            self.clipboard.copy_payload(formatted, file_bundle)
 
             with self._lock:
                 self.state.transition(AppStatus.COPIED)
                 self._set_status_label(AppStatus.COPIED.value)
 
             final_message = "BUG REPORT PRONTO\nCtrl+\" cola apenas o titulo\nCtrl+V cola o texto final"
+            if screen_result is not None and screen_result.reason != "failed":
+                final_message = (
+                    "BUG REPORT PRONTO\nCtrl+\" cola apenas o titulo\n"
+                    "Ctrl+V cola o texto final\nCtrl+Shift+V cola o GIF"
+                )
             if result.reason == RecorderStopReason.MAX_DURATION:
                 final_message = (
                     "TEMPO MAXIMO ATINGIDO\nCtrl+\" cola apenas o titulo\n"
@@ -799,7 +1114,11 @@ class BugVoiceReporterApp:
             if self._active_native_capture is not None:
                 self.native_screen_recorder.stop()
                 self.native_capture_audio_recorder.stop()
+            if self._active_voice_gif_capture is not None:
+                self.native_screen_recorder.stop()
             self._active_native_capture = None
+            self._active_voice_gif_capture = None
+            self._pending_voice_audio_result = None
             self._last_native_video_path = None
             if self.state.current != AppStatus.ERROR and self.state.can_transition(AppStatus.ERROR):
                 self.state.transition(AppStatus.ERROR, error_message=message)
@@ -952,6 +1271,7 @@ class BugVoiceReporterApp:
 
         configured = {
             "APP_SCREEN_CAPTURE_HOTKEY": self.config.screen_capture_hotkey,
+            "APP_VOICE_GIF_HOTKEY": self.config.voice_gif_hotkey,
             "APP_VIDEO_ATTACH_HOTKEY": self.config.video_attach_hotkey,
             "APP_TITLE_PASTE_HOTKEY": self.config.title_paste_hotkey,
         }
@@ -1004,6 +1324,7 @@ class BugVoiceReporterApp:
                 else ""
             )
             + f"GRAVAR TELA = {self._format_hotkey_label(self.config.screen_capture_hotkey)}\n"
+            + f"GIF DURANTE VOZ = {self._format_hotkey_label(self.config.voice_gif_hotkey)}\n"
             "ANOTAR SETA = CTRL + arrastar\n"
             f"COLAR TITULO = {self._format_hotkey_label(self.config.title_paste_hotkey)}\n"
             "COLAR TEXTO = CTRL + V\n"

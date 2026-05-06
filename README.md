@@ -16,9 +16,11 @@ Aplicativo desktop para Windows que grava relatos de bug por voz, pode capturar 
 ### Voz
 
 1. Pressione `Ctrl+F2` para iniciar a gravacao.
-2. Pressione `Ctrl+F2` novamente para encerrar.
-3. O app transcreve, formata e copia o bug report final.
-4. Use `Ctrl+"` para colar somente o titulo no campo de assunto e depois `Ctrl+V` para colar o restante.
+2. Se quiser adicionar evidencia visual enquanto continua falando, pressione `Ctrl+F4` para iniciar o GIF incremental.
+3. Pressione `Ctrl+F4` novamente para encerrar apenas o GIF e continuar narrando.
+4. Pressione `Ctrl+F2` novamente para encerrar o audio. Se o GIF ainda estiver rodando, o app encerra GIF e audio juntos.
+5. O app transcreve, formata e copia o bug report final.
+6. Use `Ctrl+"` para colar somente o titulo no campo de assunto e depois `Ctrl+V` para colar o restante.
 
 ### Voz + captura de tela
 
@@ -59,12 +61,13 @@ Variaveis mais importantes:
 - `APP_HOTKEY`: inicia e encerra a gravacao por voz
 - `APP_TITLE_PASTE_HOTKEY`: cola apenas o titulo do ultimo bug report formatado
 - `APP_SCREEN_CAPTURE_HOTKEY`: inicia e encerra a captura de tela local
+- `APP_VOICE_GIF_HOTKEY`: inicia e encerra um GIF incremental enquanto a voz continua gravando
 - `APP_VIDEO_ATTACH_HOTKEY`: cola o ultimo GIF local no campo de anexo em foco
 - `DEVTOOLS_MCP_ENABLED`: ativa a leitura opcional de contexto tecnico externo
 - `DEVTOOLS_MCP_COMMAND` ou `DEVTOOLS_MCP_CONTEXT_PATH`: apontam para o bridge que fala com Google DevTools MCP
 - `AUTO_STOP_ON_SILENCE`: encerra automaticamente apos silencio
 - `SAVE_LAST_OUTPUT`, `DEBUG_SAVE_TRANSCRIPTION` e `LOG_TO_FILE`: habilitam persistencia local
-- `NATIVE_CAPTURE_TARGET`, `NATIVE_CAPTURE_FPS` e `NATIVE_CAPTURE_FRAME_LIMIT`: ajustam a captura nativa
+- `NATIVE_CAPTURE_TARGET`, `NATIVE_CAPTURE_FPS` e `NATIVE_CAPTURE_FRAME_LIMIT`: ajustam a captura nativa; por padrao `NATIVE_CAPTURE_TARGET=desktop` captura a tela inteira
 
 Os valores padrao e todas as opcoes disponiveis estao em `.env.example`.
 
@@ -83,6 +86,18 @@ Para usar o bridge local, mantenha um Chrome/Edge iniciado com remote debugging 
 Observacao: o MCP conectado ao chat do Codex e o processo local do app sao ambientes separados. Para o texto copiado pelo app receber esses dados, o app precisa acessar um bridge local via `DEVTOOLS_MCP_COMMAND` ou um JSON em `DEVTOOLS_MCP_CONTEXT_PATH`.
 
 ## Como executar
+
+Abra pelo atalho **Bug Voice Reporter** na area de trabalho para iniciar sem terminal.
+
+Para recriar o atalho quando necessario:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\create_desktop_shortcut.ps1
+```
+
+Tambem e possivel abrir diretamente o launcher `Bug Voice Reporter.pyw`.
+
+Modo terminal para desenvolvimento:
 
 ```powershell
 python -m app.main

@@ -18,6 +18,7 @@ class AppConfig:
     restart_hotkey: str
     title_paste_hotkey: str
     screen_capture_hotkey: str
+    voice_gif_hotkey: str
     video_attach_hotkey: str
     native_capture_target: str
     native_capture_fps: int
@@ -74,12 +75,16 @@ class AppConfig:
                 "APP_SCREEN_CAPTURE_HOTKEY",
                 "ctrl+f3",
             ),
+            voice_gif_hotkey=os.getenv(
+                "APP_VOICE_GIF_HOTKEY",
+                "ctrl+f4",
+            ),
             video_attach_hotkey=os.getenv(
                 "APP_VIDEO_ATTACH_HOTKEY", "ctrl+shift+v"
             ),
             native_capture_target=os.getenv(
                 "NATIVE_CAPTURE_TARGET",
-                "foreground_window",
+                "desktop",
             ).strip().lower(),
             native_capture_fps=int(os.getenv("NATIVE_CAPTURE_FPS", "10")),
             native_capture_frame_limit=int(

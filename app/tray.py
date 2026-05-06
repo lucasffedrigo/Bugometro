@@ -1,10 +1,15 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from pathlib import Path
 import threading
 
-from PIL import Image, ImageDraw
+from PIL import Image
 import pystray
+
+
+TRAY_ICON_PATH = Path(__file__).resolve().parent / "assets" / "bug_hunter_logo.png"
+TRAY_ICON_FOCUS_BOX = (45, 35, 211, 246)
 
 
 class SystemTrayController:
@@ -85,13 +90,16 @@ class SystemTrayController:
 
     @staticmethod
     def _build_icon() -> Image.Image:
+        if TRAY_ICON_PATH.exists():
+            return _build_tray_icon(Image.open(TRAY_ICON_PATH))
         image = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
-        draw = ImageDraw.Draw(image)
-        draw.rounded_rectangle((10, 10, 54, 54), radius=14, fill=(15, 23, 42, 255))
-        draw.rounded_rectangle((18, 16, 46, 48), radius=10, fill=(238, 242, 255, 255))
-        draw.ellipse((24, 12, 40, 28), fill=(14, 165, 233, 255))
-        draw.rectangle((30, 26, 34, 40), fill=(14, 165, 233, 255))
-        draw.ellipse((21, 31, 28, 38), fill=(239, 68, 68, 255))
-        draw.ellipse((36, 31, 43, 38), fill=(239, 68, 68, 255))
-        draw.rectangle((24, 40, 40, 43), fill=(239, 68, 68, 255))
         return image
+
+
+def _build_tray_icon(source: Image.Image) -> Image.Image:
+    image = source.convert("RGBA")
+    crop = image.crop(TRAY_ICON_FOCUS_BOX)
+    side = max(crop.size)
+    square = Image.new("RGBA", (side, side), (0, 0, 0, 0))
+    square.alpha_composite(crop, ((side - crop.width) // 2, (side - crop.height) // 2))
+    return square.resize((64, 64), Image.Resampling.LANCZOS)
