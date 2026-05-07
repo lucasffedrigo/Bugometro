@@ -5,7 +5,7 @@ import unicodedata
 
 
 SECTION_PATTERNS: dict[str, list[str]] = {
-    "summary": [r"(?mi)^resumo:\s*$"],
+    "summary": [r"(?mi)^(?:\*\*)?resumo:?(?:\*\*)?\s*$"],
     "current_behavior": [r"(?mi)^(?:\*\*)?comportamento atual:(?:\*\*)?\s*$"],
     "expected_behavior": [r"(?mi)^(?:\*\*)?comportamento esperado:(?:\*\*)?\s*$"],
     "evidence": [r"(?mi)^(?:\*\*)?evidencias?:(?:\*\*)?\s*$"],

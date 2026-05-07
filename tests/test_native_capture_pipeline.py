@@ -182,7 +182,7 @@ def test_voice_gif_hotkey_starts_and_stops_screen_capture() -> None:
     assert app._active_voice_gif_capture.stop_requested is True
 
 
-def test_voice_recording_waits_for_running_gif_before_processing(tmp_path: Path) -> None:
+def test_voice_recording_prioritizes_report_before_running_gif_finishes(tmp_path: Path) -> None:
     audio_path = tmp_path / "voice.wav"
     audio_path.write_bytes(b"audio")
     app = _minimal_voice_app()
@@ -192,6 +192,7 @@ def test_voice_recording_waits_for_running_gif_before_processing(tmp_path: Path)
             NativeScreenRecordingResult | None,
             Future[str] | None,
             Future[object] | None,
+            bool,
         ]
     ] = []
     app.handle_voice_gif_hotkey()
@@ -199,16 +200,28 @@ def test_voice_recording_waits_for_running_gif_before_processing(tmp_path: Path)
         lambda result,
         screen_result=None,
         transcription_future=None,
-        devtools_future=None: started.append(
-            (result, screen_result, transcription_future, devtools_future)
+        devtools_future=None,
+        gif_requested=False: started.append(
+            (
+                result,
+                screen_result,
+                transcription_future,
+                devtools_future,
+                gif_requested,
+            )
         )
     )
 
     audio_result = RecordingResult(path=audio_path, reason=RecorderStopReason.MANUAL)
     app._on_recording_finished(audio_result)
 
-    assert started == []
-    assert app._pending_voice_audio_result == audio_result
+    assert len(started) == 1
+    assert started[0][0] == audio_result
+    assert started[0][1] is None
+    assert started[0][2] is not None
+    assert started[0][3] is not None
+    assert started[0][4] is True
+    assert app._pending_voice_audio_result is None
     assert app.native_screen_recorder.stops == 1
     assert app._active_voice_gif_capture is not None
     assert [
@@ -230,9 +243,6 @@ def test_voice_recording_waits_for_running_gif_before_processing(tmp_path: Path)
     app._on_native_capture_screen_finished(screen_result)
 
     assert len(started) == 1
-    assert started[0][0] == audio_result
-    assert started[0][1] == screen_result
-    assert started[0][2] is not None
-    assert started[0][3] is not None
     assert app._pending_voice_audio_result is None
     assert app._active_voice_gif_capture is None
+    assert app._last_native_video_path == video_path

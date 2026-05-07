@@ -1,3 +1,4 @@
+import logging
 from pathlib import Path
 
 from app.formatter import Formatter
@@ -5,6 +6,7 @@ import numpy as np
 
 from app.native_capture import (
     AnnotationModel,
+    MiddleDragArrowController,
     NativeCaptureContext,
     _draw_cursor_on_frame,
 )
@@ -28,6 +30,36 @@ def test_annotation_model_ignores_click_without_drag() -> None:
 
     assert model.snapshot(now=5.2) == []
     assert model.completed_count == 0
+
+
+def test_middle_drag_arrow_controller_uses_scroll_button_only() -> None:
+    class DummyOverlay:
+        def __init__(self) -> None:
+            self.start_count = 0
+
+        def start(self) -> None:
+            self.start_count += 1
+
+    overlay = DummyOverlay()
+    controller = MiddleDragArrowController(
+        hold_seconds=1.5,
+        logger=logging.getLogger("test"),
+    )
+    controller._overlay = overlay
+
+    controller.handle_mouse_click(10, 10, "left", True)
+    controller.handle_mouse_move(30, 30)
+    controller.handle_mouse_click(30, 30, "left", False)
+
+    assert controller.completed_count == 0
+    assert overlay.start_count == 0
+
+    controller.handle_mouse_click(10, 10, "middle", True)
+    controller.handle_mouse_move(30, 40)
+    controller.handle_mouse_click(30, 40, "middle", False)
+
+    assert controller.completed_count == 1
+    assert overlay.start_count == 1
 
 
 def test_draw_cursor_on_frame_renders_pointer_at_relative_position() -> None:

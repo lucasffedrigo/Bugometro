@@ -41,3 +41,33 @@ def test_title_paste_hotkey_writes_title_without_inline_label(monkeypatch) -> No
         "text": "[Checkout] Botao finalizar nao responde",
     }
     assert app.status_ui.messages[-1].startswith("TITULO COLADO")
+
+
+def test_clipboard_body_from_report_removes_first_line_title() -> None:
+    report = (
+        "[Checkout] Botao finalizar nao responde\n\n"
+        "**Resumo**\n"
+        "Falha ao finalizar.\n\n"
+        "**Comportamento atual:**\n"
+        "- O botao nao responde."
+    )
+
+    assert BugVoiceReporterApp._clipboard_body_from_report(report) == (
+        "**Resumo**\n"
+        "Falha ao finalizar.\n\n"
+        "**Comportamento atual:**\n"
+        "- O botao nao responde."
+    )
+
+
+def test_clipboard_body_from_report_removes_title_label() -> None:
+    report = (
+        "Titulo:\n"
+        "[Checkout] Botao finalizar nao responde\n\n"
+        "**Resumo**\n"
+        "Falha ao finalizar."
+    )
+
+    assert BugVoiceReporterApp._clipboard_body_from_report(report) == (
+        "**Resumo**\nFalha ao finalizar."
+    )

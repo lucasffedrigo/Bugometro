@@ -5,6 +5,7 @@ import os
 import signal
 import threading
 import time
+import unicodedata
 from concurrent.futures import Future, ThreadPoolExecutor
 from ctypes import wintypes
 from dataclasses import dataclass
@@ -69,7 +70,7 @@ class BugVoiceReporterApp:
         self._restart_pending = False
         self._started = False
         self._status_label = self.state.current.value
-        self._single_instance = SingleInstanceGuard("Local\\bug-voice-reporter")
+        self._single_instance = SingleInstanceGuard("Local\\bugometro")
         self._signal_installed = False
         self._old_sigint_handler = None
         self._windows_ctrl_handler = None
@@ -170,6 +171,8 @@ class BugVoiceReporterApp:
             hotkey=self.config.hotkey,
             callback=self.handle_toggle_hotkey,
             debounce_ms=self.config.hotkey_debounce_ms,
+            suppress=True,
+            exact=True,
         )
         self.restart_hotkey = (
             GlobalHotkeyManager(
@@ -184,11 +187,15 @@ class BugVoiceReporterApp:
             hotkey=self.config.screen_capture_hotkey,
             callback=self.handle_native_capture_hotkey,
             debounce_ms=self.config.hotkey_debounce_ms,
+            suppress=True,
+            exact=True,
         )
         self.voice_gif_hotkey = GlobalHotkeyManager(
             hotkey=self.config.voice_gif_hotkey,
             callback=self.handle_voice_gif_hotkey,
             debounce_ms=self.config.hotkey_debounce_ms,
+            suppress=True,
+            exact=True,
         )
         self.title_paste_hotkey = GlobalHotkeyManager(
             hotkey=self.config.title_paste_hotkey,
@@ -206,7 +213,7 @@ class BugVoiceReporterApp:
     def start(self) -> None:
         self._validate_configuration()
         if not self._single_instance.acquire():
-            raise RuntimeError("Já existe uma instância do bug-voice-reporter em execução.")
+            raise RuntimeError("Já existe uma instância do Bugômetro em execução.")
 
         self._install_signal_handlers()
         self.storage.cleanup_sensitive_outputs()
@@ -229,7 +236,7 @@ class BugVoiceReporterApp:
         self._started = True
         self._set_status_label(AppStatus.IDLE.value)
         self.logger.info(
-            "bug-voice-reporter iniciado. Hotkeys toggle=%s restart=%s captura_tela=%s gif_na_voz=%s anexar=%s titulo=%s providers transcrição=%s formatação=%s",
+            "Bugômetro iniciado. Hotkeys toggle=%s restart=%s captura_tela=%s gif_na_voz=%s anexar=%s titulo=%s providers transcrição=%s formatação=%s",
             self.config.hotkey,
             self.config.restart_hotkey or "desativado",
             self.config.screen_capture_hotkey,
@@ -363,13 +370,18 @@ class BugVoiceReporterApp:
             with self._lock:
                 video_path = self._last_native_video_path
                 active_native = self._active_native_capture
+                active_voice_gif = self._active_voice_gif_capture
                 current_state = self.state.current
                 processing_now = self.state.is_processing or (
                     active_native is not None and active_native.stop_requested
                 )
 
             if video_path is None or not video_path.exists():
-                if active_native is not None and active_native.stop_requested:
+                if active_voice_gif is not None:
+                    message = (
+                        "GIF AINDA EM PREPARO\no bug report em texto ja pode ser usado; aguarde o arquivo finalizar"
+                    )
+                elif active_native is not None and active_native.stop_requested:
                     message = (
                         "GIF AINDA EM PREPARO\na captura terminou; aguarde a finalizacao"
                     )
@@ -517,7 +529,7 @@ class BugVoiceReporterApp:
             self._active_native_capture = PendingNativeCapture(started_at=datetime.now())
             self._set_status_label("NATIVE_CAPTURE")
             self.status_ui.show_status(
-                "CAPTURA NATIVA INICIADA\nreproduza o bug, fale normalmente e use CTRL + arrastar para apontar com uma seta\nfinalize com "
+                "CAPTURA NATIVA INICIADA\nreproduza o bug, fale normalmente e use o scroll pressionado para apontar\nfinalize com "
                 f"{self._format_hotkey_label(self.config.screen_capture_hotkey)}",
                 persistent=True,
                 kind="recording",
@@ -552,9 +564,6 @@ class BugVoiceReporterApp:
         self,
         result: NativeScreenRecordingResult,
     ) -> None:
-        pending_voice_audio: RecordingResult | None = None
-        transcription_future: Future[str] | None = None
-        devtools_future: Future[object | None] | None = None
         handled_native_capture = False
         with self._lock:
             capture = self._active_native_capture
@@ -566,30 +575,23 @@ class BugVoiceReporterApp:
                 self._start_voice_gif_prework_locked(voice_gif)
                 if result.reason != "failed" and result.video_path is not None:
                     self._last_native_video_path = result.video_path
-                pending_audio = self._pending_voice_audio_result
-                if pending_audio is not None:
-                    self._start_voice_gif_prework_locked(voice_gif, pending_audio)
-                    transcription_future = voice_gif.transcription_future
-                    devtools_future = voice_gif.devtools_future
-                    self._pending_voice_audio_result = None
-                    self._active_voice_gif_capture = None
-                    pending_voice_audio = pending_audio
+                self._pending_voice_audio_result = None
+                self._active_voice_gif_capture = None
+                if result.reason == "failed":
+                    self.status_ui.show_status(
+                        "GIF INDISPONIVEL\no bug report em texto continua pronto para uso",
+                        persistent=False,
+                        duration_ms=3200,
+                        kind="error",
+                    )
                 else:
-                    if result.reason == "failed":
-                        self._active_voice_gif_capture = None
-                        self.status_ui.show_status(
-                            "GIF INDISPONIVEL\na voz continua gravando normalmente",
-                            persistent=True,
-                            kind="recording",
-                        )
-                    else:
-                        self.status_ui.show_status(
-                            "GIF PRONTO\ncontinue falando; finalize o audio com "
-                            f"{self._format_hotkey_label(self.config.hotkey)}",
-                            persistent=True,
-                            kind="recording",
-                        )
-                    return
+                    self.status_ui.show_status(
+                        "GIF PRONTO\nuse Ctrl+Shift+V no campo de anexo quando quiser",
+                        persistent=False,
+                        duration_ms=3600,
+                        kind="success",
+                    )
+                return
             else:
                 capture.screen_result = result
                 if result.reason != "failed" and result.video_path is not None:
@@ -598,13 +600,6 @@ class BugVoiceReporterApp:
                 handled_native_capture = True
         if handled_native_capture:
             self._maybe_finalize_native_capture()
-        if pending_voice_audio is not None:
-            self._start_voice_processing(
-                pending_voice_audio,
-                result,
-                transcription_future=transcription_future,
-                devtools_future=devtools_future,
-            )
 
     def _start_native_prework_locked(self, capture: PendingNativeCapture) -> None:
         if (
@@ -741,7 +736,8 @@ class BugVoiceReporterApp:
                 if self.config.clipboard_include_files
                 else []
             )
-            self.clipboard.copy_payload(formatted, file_bundle)
+            clipboard_report = self._clipboard_body_from_report(formatted)
+            self.clipboard.copy_payload(clipboard_report, file_bundle)
 
             with self._lock:
                 if self.state.current in {AppStatus.ERROR, AppStatus.COPIED}:
@@ -753,7 +749,7 @@ class BugVoiceReporterApp:
                 self._active_native_capture = None
 
             self.status_ui.show_status(
-                "BUG REPORT PRONTO\nCtrl+\" cola apenas o titulo\nCtrl+V cola o texto final\nCtrl+Shift+V cola o GIF no campo de anexo",
+                "BUG REPORT PRONTO\nCtrl+\" cola apenas o titulo\nCtrl+V cola o corpo do bug report\nCtrl+Shift+V cola o GIF no campo de anexo",
                 persistent=False,
                 duration_ms=5200,
                 kind="success",
@@ -907,6 +903,7 @@ class BugVoiceReporterApp:
             self._cancel_restart_countdown()
             self._active_voice_gif_capture = None
             self._pending_voice_audio_result = None
+            self._last_native_video_path = None
             self.recorder.start()
             self.state.transition(AppStatus.RECORDING)
             self._set_status_label(AppStatus.RECORDING.value)
@@ -958,27 +955,21 @@ class BugVoiceReporterApp:
                 self._set_status_label(AppStatus.PROCESSING_TRANSCRIPTION.value)
             voice_gif = self._active_voice_gif_capture
             if voice_gif is not None:
-                if voice_gif.screen_result is None:
-                    self._pending_voice_audio_result = result
-                    if not voice_gif.stop_requested:
-                        voice_gif.stop_requested = True
-                        self.native_screen_recorder.stop()
-                    self._start_voice_gif_prework_locked(voice_gif, result)
-                    self.status_ui.show_status(
-                        "FINALIZANDO GIF\naguarde enquanto o audio e a evidencia sao consolidados",
-                        persistent=True,
-                        kind="processing",
-                    )
-                    return
-                screen_result = voice_gif.screen_result
+                if not voice_gif.stop_requested:
+                    voice_gif.stop_requested = True
+                    self.native_screen_recorder.stop()
                 self._start_voice_gif_prework_locked(voice_gif, result)
                 transcription_future = voice_gif.transcription_future
                 devtools_future = voice_gif.devtools_future
-                self._active_voice_gif_capture = None
+                screen_result = None
+                gif_requested = True
+                if voice_gif.screen_result is not None:
+                    self._active_voice_gif_capture = None
             else:
                 screen_result = None
                 transcription_future = None
                 devtools_future = None
+                gif_requested = self._last_native_video_path is not None
 
         if result.reason == RecorderStopReason.SILENCE:
             self.logger.info(
@@ -991,6 +982,7 @@ class BugVoiceReporterApp:
             screen_result,
             transcription_future=transcription_future,
             devtools_future=devtools_future,
+            gif_requested=gif_requested,
         )
 
     def _start_voice_processing(
@@ -999,10 +991,17 @@ class BugVoiceReporterApp:
         screen_result: NativeScreenRecordingResult | None = None,
         transcription_future: Future[str] | None = None,
         devtools_future: Future[object | None] | None = None,
+        gif_requested: bool = False,
     ) -> None:
         threading.Thread(
             target=self._process_voice_recording,
-            args=(result, screen_result, transcription_future, devtools_future),
+            args=(
+                result,
+                screen_result,
+                transcription_future,
+                devtools_future,
+                gif_requested,
+            ),
             name="recording-processor",
             daemon=True,
         ).start()
@@ -1013,6 +1012,7 @@ class BugVoiceReporterApp:
         screen_result: NativeScreenRecordingResult | None = None,
         transcription_future: Future[str] | None = None,
         devtools_future: Future[object | None] | None = None,
+        gif_requested: bool = False,
     ) -> None:
         audio_path = result.path
         try:
@@ -1071,22 +1071,23 @@ class BugVoiceReporterApp:
                 if evidence_context is not None and self.config.clipboard_include_files
                 else []
             )
-            self.clipboard.copy_payload(formatted, file_bundle)
+            clipboard_report = self._clipboard_body_from_report(formatted)
+            self.clipboard.copy_payload(clipboard_report, file_bundle)
 
             with self._lock:
                 self.state.transition(AppStatus.COPIED)
                 self._set_status_label(AppStatus.COPIED.value)
 
-            final_message = "BUG REPORT PRONTO\nCtrl+\" cola apenas o titulo\nCtrl+V cola o texto final"
-            if screen_result is not None and screen_result.reason != "failed":
+            final_message = "BUG REPORT PRONTO\nCtrl+\" cola apenas o titulo\nCtrl+V cola o corpo do bug report"
+            if gif_requested:
                 final_message = (
                     "BUG REPORT PRONTO\nCtrl+\" cola apenas o titulo\n"
-                    "Ctrl+V cola o texto final\nCtrl+Shift+V cola o GIF"
+                    "Ctrl+V cola o corpo do bug report\nCtrl+Shift+V cola o GIF quando estiver pronto"
                 )
             if result.reason == RecorderStopReason.MAX_DURATION:
                 final_message = (
                     "TEMPO MAXIMO ATINGIDO\nCtrl+\" cola apenas o titulo\n"
-                    "o texto final ja esta pronto no Ctrl+V"
+                    "o corpo do bug report ja esta pronto no Ctrl+V"
                 )
 
             self.status_ui.show_status(
@@ -1150,7 +1151,7 @@ class BugVoiceReporterApp:
                 return
             self._write_text_after_hotkey_release(self.config.title_paste_hotkey, title)
             self.status_ui.show_status(
-                "TITULO COLADO\nCtrl+V continua com o bug report completo",
+                "TITULO COLADO\nCtrl+V cola o corpo do bug report",
                 persistent=False,
                 duration_ms=1500,
                 kind="hud",
@@ -1175,6 +1176,47 @@ class BugVoiceReporterApp:
     def _write_text_worker(self, hotkey: str, text: str) -> None:
         self._wait_for_hotkey_release(hotkey)
         keyboard.write(text)
+
+    @staticmethod
+    def _clipboard_body_from_report(report: str) -> str:
+        lines = report.splitlines()
+        index = 0
+        while index < len(lines) and not lines[index].strip():
+            index += 1
+        if index >= len(lines):
+            return report.strip()
+
+        title = extract_title(report).strip()
+        if not title:
+            return report.strip()
+
+        first_line = lines[index].strip()
+        normalized_first = _normalize_heading(first_line)
+        consumed_title = False
+        if normalized_first.startswith("titulo:"):
+            index += 1
+            consumed_title = True
+            if not first_line.split(":", 1)[1].strip():
+                while index < len(lines) and not lines[index].strip():
+                    index += 1
+                if index < len(lines):
+                    index += 1
+        elif normalized_first.rstrip(":") == "titulo":
+            index += 1
+            while index < len(lines) and not lines[index].strip():
+                index += 1
+            if index < len(lines):
+                index += 1
+                consumed_title = True
+        elif first_line == title:
+            index += 1
+            consumed_title = True
+
+        if not consumed_title:
+            return report.strip()
+        while index < len(lines) and not lines[index].strip():
+            index += 1
+        return "\n".join(lines[index:]).strip()
 
     def _schedule_idle_reset(self, delay_seconds: float = 2.8) -> None:
         self._cancel_idle_reset()
@@ -1316,16 +1358,16 @@ class BugVoiceReporterApp:
             else "histórico local ativo"
         )
         return (
-            "BUG HUNTER OFFLINE\n"
-            f"GRAVAR VOZ = {self._format_hotkey_label(self.config.hotkey)}\n"
+            "BUGÔMETRO\n"
+            f"VOZ = {self._format_hotkey_label(self.config.hotkey)}\n"
             + (
-                f"REINICIAR VOZ = {self._format_hotkey_label(self.config.restart_hotkey)}\n"
+                f"REINICIAR = {self._format_hotkey_label(self.config.restart_hotkey)}\n"
                 if self.config.restart_hotkey.strip()
                 else ""
             )
-            + f"GRAVAR TELA = {self._format_hotkey_label(self.config.screen_capture_hotkey)}\n"
-            + f"GIF DURANTE VOZ = {self._format_hotkey_label(self.config.voice_gif_hotkey)}\n"
-            "ANOTAR SETA = CTRL + arrastar\n"
+            + f"TELA + VOZ = {self._format_hotkey_label(self.config.screen_capture_hotkey)}\n"
+            + f"GIF NA VOZ = {self._format_hotkey_label(self.config.voice_gif_hotkey)}\n"
+            "SETA NO GIF = SCROLL + ARRASTAR\n"
             f"COLAR TITULO = {self._format_hotkey_label(self.config.title_paste_hotkey)}\n"
             "COLAR TEXTO = CTRL + V\n"
             f"COLAR GIF = {self._format_hotkey_label(self.config.video_attach_hotkey)}\n"
@@ -1446,6 +1488,14 @@ class BugVoiceReporterApp:
             return
         ctypes.windll.kernel32.SetConsoleCtrlHandler(self._windows_ctrl_handler, False)
         self._windows_ctrl_handler = None
+
+
+def _normalize_heading(value: str) -> str:
+    normalized = unicodedata.normalize("NFKD", value.strip())
+    normalized = "".join(
+        character for character in normalized if not unicodedata.combining(character)
+    )
+    return normalized.lower()
 
 
 def main() -> None:

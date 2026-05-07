@@ -67,17 +67,17 @@ class AppConfig:
             prompt_path=root / "prompts" / "bug_prompt.txt",
             last_output_path=root / "last_output.txt",
             last_transcription_path=root / "last_transcription.txt",
-            log_file_path=root / "bug_voice_reporter.log",
-            hotkey=os.getenv("APP_HOTKEY", "ctrl+tab"),
+            log_file_path=root / "bugometro.log",
+            hotkey=os.getenv("APP_HOTKEY", "ctrl+shift"),
             restart_hotkey=os.getenv("APP_RESTART_HOTKEY", "ctrl+caps lock"),
             title_paste_hotkey=os.getenv("APP_TITLE_PASTE_HOTKEY", "ctrl+'"),
             screen_capture_hotkey=os.getenv(
                 "APP_SCREEN_CAPTURE_HOTKEY",
-                "ctrl+f3",
+                "ctrl+shift+space",
             ),
             voice_gif_hotkey=os.getenv(
                 "APP_VOICE_GIF_HOTKEY",
-                "ctrl+f4",
+                "ctrl+shift+alt",
             ),
             video_attach_hotkey=os.getenv(
                 "APP_VIDEO_ATTACH_HOTKEY", "ctrl+shift+v"

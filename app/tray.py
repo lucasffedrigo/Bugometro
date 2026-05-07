@@ -30,9 +30,9 @@ class SystemTrayController:
         if self.icon is not None:
             return
         self.icon = pystray.Icon(
-            "bug-voice-reporter",
+            "bugometro",
             self._build_icon(),
-            "bug-voice-reporter",
+            "Bugômetro",
             menu=pystray.Menu(
                 pystray.MenuItem(
                     lambda item: f"Status: {self.status_provider()}",

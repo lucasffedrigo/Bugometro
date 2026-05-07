@@ -56,7 +56,7 @@ Relato bruto:
 Formato obrigatório da saída final:
 [Plataforma/Componente] ação do usuário e comportamento indesejado
 
-Resumo:
+**Resumo**
 [texto]
 
 **Comportamento atual:**

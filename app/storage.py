@@ -22,7 +22,7 @@ class LocalStorage:
     def create_temp_wav_path(self) -> Path:
         handle = tempfile.NamedTemporaryFile(
             delete=False,
-            prefix="bug_voice_reporter_",
+            prefix="bugometro_",
             suffix=".wav",
         )
         path = Path(handle.name)
@@ -30,7 +30,7 @@ class LocalStorage:
         return path
 
     def create_temp_evidence_dir(self) -> Path:
-        directory = tempfile.mkdtemp(prefix="bug_voice_reporter_capture_")
+        directory = tempfile.mkdtemp(prefix="bugometro_capture_")
         return Path(directory)
 
     def save_last_output(self, content: str) -> Path | None:
@@ -63,7 +63,7 @@ class LocalStorage:
     def cleanup_stale_temp_audio(self, max_age_hours: float = 12) -> None:
         temp_dir = Path(tempfile.gettempdir())
         cutoff = time.time() - (max_age_hours * 3600)
-        for path in temp_dir.glob("bug_voice_reporter_*.wav"):
+        for path in temp_dir.glob("bugometro_*.wav"):
             try:
                 if path.stat().st_mtime < cutoff:
                     path.unlink(missing_ok=True)
@@ -73,7 +73,7 @@ class LocalStorage:
     def cleanup_stale_temp_evidence(self, max_age_hours: float = 24) -> None:
         temp_dir = Path(tempfile.gettempdir())
         cutoff = time.time() - (max_age_hours * 3600)
-        for path in temp_dir.glob("bug_voice_reporter_capture_*"):
+        for path in temp_dir.glob("bugometro_capture_*"):
             try:
                 if path.stat().st_mtime >= cutoff:
                     continue

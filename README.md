@@ -1,33 +1,33 @@
-# bug-voice-reporter
+# Bugômetro
 
-Aplicativo desktop para Windows que grava relatos de bug por voz, pode capturar a tela localmente, transcreve com Gemini ou OpenAI, monta o bug report e copia o resultado para a area de transferencia.
+Aplicativo desktop para Windows que grava relatos de bug por voz, pode capturar a tela localmente, transcreve com Gemini ou OpenAI, monta o bug report e copia o corpo do resultado para a area de transferencia.
 
 ## O que o app faz
 
 - grava o relato por hotkey global
 - captura a tela localmente com GIF e frames temporarios
-- permite anotar com seta usando `Ctrl + arrastar` durante a captura
+- permite anotar com seta pressionando o scroll do mouse e arrastando durante a captura
 - transcreve com Gemini ou OpenAI
 - organiza a saida em um template de bug report
-- copia o texto final para o clipboard
+- copia o corpo do bug report para o clipboard
 
 ## Fluxos principais
 
 ### Voz
 
-1. Pressione `Ctrl+F2` para iniciar a gravacao.
-2. Se quiser adicionar evidencia visual enquanto continua falando, pressione `Ctrl+F4` para iniciar o GIF incremental.
-3. Pressione `Ctrl+F4` novamente para encerrar apenas o GIF e continuar narrando.
-4. Pressione `Ctrl+F2` novamente para encerrar o audio. Se o GIF ainda estiver rodando, o app encerra GIF e audio juntos.
-5. O app transcreve, formata e copia o bug report final.
+1. Pressione `Ctrl+Shift` para iniciar a gravacao.
+2. Se quiser adicionar evidencia visual enquanto continua falando, pressione `Ctrl+Shift+Alt` para iniciar o GIF incremental.
+3. Pressione `Ctrl+Shift+Alt` novamente para encerrar apenas o GIF e continuar narrando.
+4. Pressione `Ctrl+Shift` novamente para encerrar o audio. Se o GIF ainda estiver rodando, o app encerra GIF e audio juntos, mas prioriza liberar o bug report em texto primeiro.
+5. O app transcreve, formata e copia o corpo do bug report; o GIF continua finalizando em segundo plano quando necessario.
 6. Use `Ctrl+"` para colar somente o titulo no campo de assunto e depois `Ctrl+V` para colar o restante.
 
 ### Voz + captura de tela
 
-1. Pressione `Ctrl+F3` para iniciar a captura de tela local.
-2. Reproduza o bug, fale normalmente e use `Ctrl + arrastar` se quiser destacar algo com uma seta.
-3. Pressione `Ctrl+F3` novamente para finalizar.
-4. O app processa a voz, consolida o GIF local e copia o bug report final.
+1. Pressione `Ctrl+Shift+Espaco` para iniciar a captura de tela local.
+2. Reproduza o bug, fale normalmente e pressione o scroll do mouse enquanto arrasta se quiser destacar algo com uma seta.
+3. Pressione `Ctrl+Shift+Espaco` novamente para finalizar.
+4. O app processa a voz, consolida o GIF local e copia o corpo do bug report.
 5. Foque o campo de anexo e use `Ctrl+Shift+V` para colar o ultimo GIF quando precisar.
 
 ## Requisitos
@@ -87,7 +87,7 @@ Observacao: o MCP conectado ao chat do Codex e o processo local do app sao ambie
 
 ## Como executar
 
-Abra pelo atalho **Bug Voice Reporter** na area de trabalho para iniciar sem terminal.
+Abra pelo atalho **Bugômetro** na area de trabalho para iniciar sem terminal.
 
 Para recriar o atalho quando necessario:
 
@@ -95,7 +95,7 @@ Para recriar o atalho quando necessario:
 powershell -ExecutionPolicy Bypass -File .\scripts\create_desktop_shortcut.ps1
 ```
 
-Tambem e possivel abrir diretamente o launcher `Bug Voice Reporter.pyw`.
+Tambem e possivel abrir diretamente o launcher `Bugômetro.pyw`.
 
 Modo terminal para desenvolvimento:
 
@@ -121,8 +121,8 @@ python -m pytest
 
 - `last_output.txt`
 - `last_transcription.txt`
-- `bug_voice_reporter.log`
-- pacote temporario `bug_voice_reporter_capture_*`
+- `bugometro.log`
+- pacote temporario `bugometro_capture_*`
 
 ## Troubleshooting
 

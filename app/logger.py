@@ -6,7 +6,7 @@ from pathlib import Path
 
 
 def setup_logging(log_path: Path, debug: bool = False, log_to_file: bool = False) -> logging.Logger:
-    logger = logging.getLogger("bug_voice_reporter")
+    logger = logging.getLogger("bugometro")
     for handler in list(logger.handlers):
         logger.removeHandler(handler)
         handler.close()

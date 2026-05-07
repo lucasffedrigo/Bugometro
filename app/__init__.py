@@ -1,1 +1,1 @@
-"""bug-voice-reporter application package."""
+"""Bugômetro application package."""

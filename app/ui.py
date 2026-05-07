@@ -8,6 +8,22 @@ from ctypes import wintypes
 from dataclasses import dataclass
 
 
+_HUD_LABEL_COLORS = (
+    "#facc15",  # amber
+    "#22d3ee",  # cyan
+    "#a78bfa",  # violet
+    "#34d399",  # emerald
+    "#fb7185",  # rose
+    "#60a5fa",  # blue
+    "#f97316",  # orange
+)
+_HUD_MIN_COLUMNS = 30
+_HUD_MAX_COLUMNS = 48
+_HUD_SCREEN_WIDTH_RATIO = 0.28
+_HUD_CHAR_PIXEL_WIDTH = 8
+_HUD_HORIZONTAL_CHROME_PX = 34
+
+
 def _enable_process_dpi_awareness() -> None:
     try:
         user32 = ctypes.WinDLL("user32", use_last_error=True)
@@ -151,7 +167,7 @@ class StatusNotifier:
             shell = tk.Frame(window, bg="#22d3ee", padx=1, pady=1)
             shell.pack()
 
-            panel = tk.Frame(shell, bg="#020617", padx=16, pady=10)
+            panel = tk.Frame(shell, bg="#020617", padx=14, pady=10)
             panel.pack()
 
             title_label = tk.Label(
@@ -160,15 +176,15 @@ class StatusNotifier:
                 bg="#020617",
                 fg="#67e8f9",
                 font=("Consolas", 16, "bold"),
-                justify="left",
-                anchor="w",
-                width=24,
+                justify="center",
+                anchor="center",
+                width=0,
             )
             title_label.pack(fill="x")
 
             divider = tk.Canvas(
                 panel,
-                width=270,
+                width=260,
                 height=6,
                 bg="#020617",
                 highlightthickness=0,
@@ -176,16 +192,22 @@ class StatusNotifier:
             )
             divider.pack(fill="x", pady=(4, 5))
 
-            body_label = tk.Label(
+            body_text = tk.Text(
                 panel,
-                text="",
                 bg="#020617",
                 fg="#dbeafe",
                 font=("Consolas", 10, "bold"),
-                justify="left",
-                anchor="w",
-                wraplength=300,
+                width=34,
+                height=1,
+                wrap="none",
+                borderwidth=0,
+                highlightthickness=0,
+                padx=6,
+                pady=2,
+                cursor="arrow",
+                takefocus=0,
             )
+            body_text.configure(state="disabled")
 
             footer_label = tk.Label(
                 panel,
@@ -195,7 +217,7 @@ class StatusNotifier:
                 font=("Consolas", 8, "normal"),
                 justify="left",
                 anchor="w",
-                wraplength=300,
+                wraplength=260,
             )
 
             hide_job: str | None = None
@@ -232,19 +254,87 @@ class StatusNotifier:
             def draw_divider(accent: str, bg: str) -> None:
                 divider.configure(bg=bg)
                 divider.delete("all")
-                width = max(divider.winfo_width(), 270)
+                width = max(divider.winfo_width(), 220)
                 y = 3
                 divider.create_line(16, y, width - 16, y, fill=accent, width=2)
                 divider.create_rectangle(13, y - 2, 17, y + 2, fill=accent, outline=accent)
                 divider.create_rectangle(width - 17, y - 2, width - 13, y + 2, fill=accent, outline=accent)
 
-            def update_optional_labels(body: str, footer: str) -> None:
+            def apply_responsive_width(
+                title: str,
+                lines: list[str],
+                *,
+                shortcut_layout: bool,
+            ) -> int:
+                columns = _hud_body_columns(
+                    lines,
+                    work_area=_work_area_rect(),
+                    compact=not shortcut_layout,
+                )
+                pixel_width = _hud_body_pixel_width(columns)
+                title_label.configure(width=_hud_title_columns(title))
+                divider.configure(width=pixel_width)
+                body_text.configure(width=columns)
+                footer_label.configure(wraplength=pixel_width)
+                return columns
+
+            def update_body_text(
+                body: str,
+                style: HudStyle,
+                *,
+                shortcut_layout: bool,
+                columns: int,
+            ) -> None:
+                body_lines = body.splitlines()
+                display_lines = body_lines if shortcut_layout else _wrap_hud_body_lines(
+                    body_lines,
+                    columns=columns,
+                )
+                body_text.configure(
+                    state="normal",
+                    bg=style.background,
+                    fg=style.foreground,
+                    font=("Consolas", style.body_size, "bold"),
+                    wrap="none",
+                    height=max(1, len(display_lines)),
+                )
+                body_text.delete("1.0", "end")
+                body_text.tag_configure("hud_body", foreground=style.foreground)
+                for index, line in enumerate(display_lines):
+                    label, value = _split_hud_label_line(line)
+                    if label:
+                        label_tag = f"hud_label_{index}"
+                        body_text.tag_configure(
+                            label_tag,
+                            foreground=_hud_label_color_for_index(index),
+                        )
+                        body_text.insert("end", label, (label_tag,))
+                        body_text.insert("end", value, ("hud_body",))
+                    else:
+                        body_text.insert("end", line, ("hud_body",))
+                    if index < len(display_lines) - 1:
+                        body_text.insert("end", "\n", ("hud_body",))
+                body_text.configure(state="disabled")
+
+            def update_optional_labels(
+                body: str,
+                footer: str,
+                style: HudStyle,
+                *,
+                shortcut_layout: bool,
+                columns: int,
+            ) -> None:
                 if body:
-                    body_label.configure(text=body)
-                    if not body_label.winfo_ismapped():
-                        body_label.pack(fill="x")
+                    update_body_text(
+                        body,
+                        style,
+                        shortcut_layout=shortcut_layout,
+                        columns=columns,
+                    )
+                    if not body_text.winfo_ismapped():
+                        body_text.pack(fill="x")
                 else:
-                    body_label.pack_forget()
+                    body_text.pack_forget()
 
                 if footer:
                     footer_label.configure(text=footer)
@@ -306,6 +396,12 @@ class StatusNotifier:
 
                         style = style_for(message.kind)
                         title, body, footer = split_message(message.text)
+                        shortcut_layout = message.kind == "hud"
+                        columns = apply_responsive_width(
+                            title,
+                            [*body.splitlines(), footer],
+                            shortcut_layout=shortcut_layout,
+                        )
 
                         window.configure(bg=style.background)
                         shell.configure(bg=style.accent)
@@ -316,17 +412,18 @@ class StatusNotifier:
                             fg=style.accent,
                             font=("Consolas", style.title_size, "bold"),
                         )
-                        body_label.configure(
-                            bg=style.background,
-                            fg=style.foreground,
-                            font=("Consolas", style.body_size, "bold"),
-                        )
                         footer_label.configure(
                             bg=style.background,
                             fg=style.muted,
                             font=("Consolas", max(10, style.body_size - 2), "normal"),
                         )
-                        update_optional_labels(body, footer)
+                        update_optional_labels(
+                            body,
+                            footer,
+                            style,
+                            shortcut_layout=shortcut_layout,
+                            columns=columns,
+                        )
                         draw_divider(style.accent, style.background)
                         show_window()
 
@@ -390,6 +487,93 @@ def _bottom_right_bounds(
     x = max(left + safe_margin, right - safe_width - safe_margin)
     y = max(top + safe_margin, bottom - safe_height - safe_margin)
     return x, y, safe_width, safe_height
+
+
+def _split_hud_label_line(line: str) -> tuple[str, str]:
+    if "=" not in line:
+        return "", line
+    label, value = line.split("=", 1)
+    return f"{label.rstrip()} =", f" {value.lstrip()}"
+
+
+def _hud_label_color_for_index(index: int) -> str:
+    return _HUD_LABEL_COLORS[index % len(_HUD_LABEL_COLORS)]
+
+
+def _hud_body_columns(
+    lines: list[str],
+    *,
+    work_area: tuple[int, int, int, int],
+    compact: bool = False,
+) -> int:
+    left, _top, right, _bottom = work_area
+    screen_width = max(1, right - left)
+    proportional_pixels = int(screen_width * _HUD_SCREEN_WIDTH_RATIO)
+    available_columns = max(
+        _HUD_MIN_COLUMNS,
+        min(
+            _HUD_MAX_COLUMNS,
+            (proportional_pixels - _HUD_HORIZONTAL_CHROME_PX)
+            // _HUD_CHAR_PIXEL_WIDTH,
+        ),
+    )
+    if compact:
+        desired_columns = _HUD_MIN_COLUMNS
+    else:
+        longest_line = max((len(line) for line in lines if line), default=_HUD_MIN_COLUMNS)
+        desired_columns = max(_HUD_MIN_COLUMNS, longest_line + 2)
+    return min(desired_columns, available_columns)
+
+
+def _hud_body_pixel_width(columns: int) -> int:
+    return max(220, int(columns) * _HUD_CHAR_PIXEL_WIDTH)
+
+
+def _hud_title_columns(title: str) -> int:
+    return min(22, max(18, len(title.strip()) + 1))
+
+
+def _wrap_hud_body_lines(lines: list[str], *, columns: int) -> list[str]:
+    safe_columns = max(12, int(columns) - 2)
+    wrapped: list[str] = []
+    for line in lines:
+        words = _group_hud_hotkey_tokens(line.split())
+        if not words:
+            wrapped.append("")
+            continue
+        current = words[0]
+        for word in words[1:]:
+            if len(current) + 1 + len(word) <= safe_columns:
+                current = f"{current} {word}"
+            else:
+                wrapped.append(current)
+                current = word
+        wrapped.append(current)
+    return wrapped
+
+
+def _group_hud_hotkey_tokens(words: list[str]) -> list[str]:
+    grouped: list[str] = []
+    index = 0
+    hotkey_words = {"CTRL", "SHIFT", "ALT", "SPACE", "CAPS"}
+    while index < len(words):
+        word = words[index]
+        if word.upper() not in hotkey_words:
+            grouped.append(word)
+            index += 1
+            continue
+
+        hotkey = [word]
+        index += 1
+        while (
+            index + 1 < len(words)
+            and words[index] == "+"
+            and words[index + 1].upper() in hotkey_words
+        ):
+            hotkey.extend([words[index], words[index + 1]])
+            index += 2
+        grouped.append(" ".join(hotkey))
+    return grouped
 
 
 class _MonitorInfo(ctypes.Structure):

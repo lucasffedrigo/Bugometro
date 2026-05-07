@@ -31,7 +31,7 @@ def test_output_validator_detects_missing_sections_and_title() -> None:
 def test_output_validator_accepts_title_with_component_brackets() -> None:
     valid = (
         "[Login Web] usuário envia credenciais válidas e sistema retorna erro genérico\n\n"
-        "Resumo:\nResumo curto.\n\n"
+        "**Resumo**\nResumo curto.\n\n"
         "**Comportamento atual:**\n"
         "- O sistema falha ao salvar.\n\n"
         "**Comportamento esperado:**\n"

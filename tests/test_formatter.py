@@ -116,7 +116,7 @@ def test_inject_evidence_lines_keeps_environment_section_clean() -> None:
         "**Comportamento esperado:**\n- b\n\n"
         "**Passos para reproducao:**\n1. x\n\n"
         "**Evidencias:**\n"
-        "GIF da captura e arquivos locais armazenados em C:\\Users\\lucas\\AppData\\Local\\Temp\\bug_voice_reporter_capture_123.\n\n"
+        "GIF da captura e arquivos locais armazenados em C:\\Users\\lucas\\AppData\\Local\\Temp\\bugometro_capture_123.\n\n"
         "**Informacoes do ambiente:**\n"
         "- Dispositivo: Nao informado\n"
         "- Versao: Nao informado\n"

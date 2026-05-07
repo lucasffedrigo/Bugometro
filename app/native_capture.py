@@ -3,6 +3,7 @@ from __future__ import annotations
 import ctypes
 import logging
 import math
+import os
 import queue
 import threading
 import time
@@ -12,7 +13,6 @@ from ctypes import wintypes
 from dataclasses import dataclass
 from pathlib import Path
 
-import keyboard
 import numpy as np
 from PIL import Image, ImageDraw
 
@@ -150,7 +150,7 @@ class AnnotationModel:
             return self._completed_count
 
 
-class CtrlDragArrowController:
+class MiddleDragArrowController:
     def __init__(
         self,
         hold_seconds: float,
@@ -159,6 +159,7 @@ class CtrlDragArrowController:
         self.logger = logger
         self.model = AnnotationModel(hold_seconds=hold_seconds)
         self._overlay = _AnnotationOverlay(self.model, logger)
+        self._middle_button_suppressor = _MiddleButtonSuppressor(logger)
         self._listener = None
         self._active = False
         self._started = False
@@ -174,37 +175,48 @@ class CtrlDragArrowController:
             return
 
         def on_move(x: int, y: int) -> None:
-            if not self._active:
-                return
-            if not keyboard.is_pressed("ctrl"):
-                self.model.end()
-                self._active = False
-                return
-            self.model.extend(int(x), int(y))
+            self.handle_mouse_move(int(x), int(y))
 
         def on_click(x: int, y: int, button, pressed: bool) -> None:
             button_name = getattr(button, "name", str(button))
-            if button_name != "left":
-                if self._active and not pressed:
-                    self.model.end()
-                    self._active = False
-                return
+            self.handle_mouse_click(int(x), int(y), button_name, pressed)
 
-            if pressed:
-                if keyboard.is_pressed("ctrl"):
-                    self._overlay.start()
-                    self.model.begin(int(x), int(y))
-                    self._active = True
-                return
+        try:
+            self._middle_button_suppressor.start()
+            self._listener = mouse.Listener(on_move=on_move, on_click=on_click)
+            self._listener.daemon = True
+            self._listener.start()
+        except Exception as exc:  # pragma: no cover - depends on OS hook availability
+            self._middle_button_suppressor.stop()
+            self._listener = None
+            self._started = False
+            self.logger.warning("Anotacoes visuais indisponiveis: %s", exc)
 
-            if self._active:
-                self.model.extend(int(x), int(y))
-                self.model.end()
-                self._active = False
+    def handle_mouse_move(self, x: int, y: int) -> None:
+        if not self._active:
+            return
+        self.model.extend(x, y)
 
-        self._listener = mouse.Listener(on_move=on_move, on_click=on_click)
-        self._listener.daemon = True
-        self._listener.start()
+    def handle_mouse_click(
+        self,
+        x: int,
+        y: int,
+        button_name: str,
+        pressed: bool,
+    ) -> None:
+        if button_name != "middle":
+            return
+
+        if pressed:
+            self._overlay.start()
+            self.model.begin(x, y)
+            self._active = True
+            return
+
+        if self._active:
+            self.model.extend(x, y)
+            self.model.end()
+            self._active = False
 
     def stop(self) -> None:
         self._active = False
@@ -216,6 +228,7 @@ class CtrlDragArrowController:
                 pass
             self._listener = None
         self._overlay.stop()
+        self._middle_button_suppressor.stop()
         self._started = False
 
     def draw_on_frame(
@@ -243,6 +256,139 @@ class CtrlDragArrowController:
         return self.model.completed_count
 
 
+class _MiddleButtonSuppressor:
+    _WH_MOUSE_LL = 14
+    _WM_QUIT = 0x0012
+    _WM_MBUTTONDOWN = 0x0207
+    _WM_MBUTTONUP = 0x0208
+    _WM_NCMBUTTONDOWN = 0x00A7
+    _WM_NCMBUTTONUP = 0x00A8
+
+    def __init__(self, logger: logging.Logger) -> None:
+        self.logger = logger
+        self._thread: threading.Thread | None = None
+        self._started = False
+        self._ready = threading.Event()
+        self._stop_event = threading.Event()
+        self._thread_id = 0
+        self._hook = None
+        self._callback = None
+
+    def start(self) -> None:
+        if self._started or os.name != "nt":
+            return
+        self._started = True
+        self._ready.clear()
+        self._stop_event.clear()
+        self._thread = threading.Thread(
+            target=self._run,
+            name="middle-button-suppressor",
+            daemon=True,
+        )
+        self._thread.start()
+        if not self._ready.wait(timeout=1.0):
+            self.logger.warning("Bloqueio do clique do scroll demorou para iniciar.")
+            self.stop()
+
+    def stop(self) -> None:
+        if not self._started:
+            return
+        self._started = False
+        self._stop_event.set()
+        if self._thread_id:
+            try:
+                ctypes.windll.user32.PostThreadMessageW(
+                    self._thread_id,
+                    self._WM_QUIT,
+                    0,
+                    0,
+                )
+            except Exception:
+                pass
+        if self._thread is not None:
+            self._thread.join(timeout=0.5)
+            self._thread = None
+        self._thread_id = 0
+
+    def _run(self) -> None:
+        user32 = ctypes.windll.user32
+        kernel32 = ctypes.windll.kernel32
+        suppressed_messages = {
+            self._WM_MBUTTONDOWN,
+            self._WM_MBUTTONUP,
+            self._WM_NCMBUTTONDOWN,
+            self._WM_NCMBUTTONUP,
+        }
+
+        result_type = getattr(wintypes, "LRESULT", wintypes.LPARAM)
+        hook_proc_type = ctypes.WINFUNCTYPE(
+            result_type,
+            ctypes.c_int,
+            wintypes.WPARAM,
+            wintypes.LPARAM,
+        )
+        handle_type = wintypes.HANDLE
+        kernel32.GetModuleHandleW.argtypes = [wintypes.LPCWSTR]
+        kernel32.GetModuleHandleW.restype = handle_type
+        kernel32.GetCurrentThreadId.restype = wintypes.DWORD
+        user32.SetWindowsHookExW.argtypes = [
+            ctypes.c_int,
+            hook_proc_type,
+            handle_type,
+            wintypes.DWORD,
+        ]
+        user32.SetWindowsHookExW.restype = handle_type
+        user32.CallNextHookEx.argtypes = [
+            handle_type,
+            ctypes.c_int,
+            wintypes.WPARAM,
+            wintypes.LPARAM,
+        ]
+        user32.CallNextHookEx.restype = result_type
+        user32.UnhookWindowsHookEx.argtypes = [handle_type]
+        user32.UnhookWindowsHookEx.restype = wintypes.BOOL
+        user32.PostThreadMessageW.argtypes = [
+            wintypes.DWORD,
+            wintypes.UINT,
+            wintypes.WPARAM,
+            wintypes.LPARAM,
+        ]
+        user32.PostThreadMessageW.restype = wintypes.BOOL
+
+        def hook_proc(n_code: int, w_param, l_param):
+            if n_code >= 0 and int(w_param) in suppressed_messages:
+                return 1
+            return user32.CallNextHookEx(self._hook, n_code, w_param, l_param)
+
+        self._callback = hook_proc_type(hook_proc)
+        self._thread_id = int(kernel32.GetCurrentThreadId())
+        self._hook = user32.SetWindowsHookExW(
+            self._WH_MOUSE_LL,
+            self._callback,
+            kernel32.GetModuleHandleW(None),
+            0,
+        )
+        if not self._hook:
+            self.logger.warning("Nao foi possivel bloquear o clique do scroll durante a anotacao.")
+            self._ready.set()
+            return
+
+        self._ready.set()
+        message = wintypes.MSG()
+        try:
+            while not self._stop_event.is_set():
+                result = user32.GetMessageW(ctypes.byref(message), None, 0, 0)
+                if result <= 0:
+                    break
+                user32.TranslateMessage(ctypes.byref(message))
+                user32.DispatchMessageW(ctypes.byref(message))
+        finally:
+            if self._hook:
+                user32.UnhookWindowsHookEx(self._hook)
+                self._hook = None
+            self._callback = None
+
+
 class NativeScreenRecorder:
     def __init__(
         self,
@@ -261,7 +407,7 @@ class NativeScreenRecorder:
         self.logger = logger
         self.on_finished = on_finished
 
-        self._annotation = CtrlDragArrowController(
+        self._annotation = MiddleDragArrowController(
             hold_seconds=annotation_hold_seconds,
             logger=logger,
         )

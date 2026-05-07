@@ -282,7 +282,7 @@ class Formatter:
     def _sanitize_evidence_lines(lines: list[str]) -> list[str]:
         blocked_tokens = (
             "appdata\\local\\temp",
-            "bug_voice_reporter_capture",
+            "bugometro_capture",
             "pacote local de evid",
             "arquivos locais",
             "video da captura:",
