@@ -23,7 +23,7 @@ def test_load_config_has_default_voice_gif_hotkey(monkeypatch, tmp_path) -> None
 
     config = AppConfig.load(project_root=tmp_path)
 
-    assert config.voice_gif_hotkey == "ctrl+shift+alt"
+    assert config.voice_gif_hotkey == "ctrl+shift+f2"
 
 
 def test_env_example_documents_all_runtime_env_vars() -> None:

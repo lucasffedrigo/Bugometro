@@ -15,18 +15,18 @@ Aplicativo desktop para Windows que grava relatos de bug por voz, pode capturar 
 
 ### Voz
 
-1. Pressione `Ctrl+Shift` para iniciar a gravacao.
-2. Se quiser adicionar evidencia visual enquanto continua falando, pressione `Ctrl+Shift+Alt` para iniciar o GIF incremental.
-3. Pressione `Ctrl+Shift+Alt` novamente para encerrar apenas o GIF e continuar narrando.
-4. Pressione `Ctrl+Shift` novamente para encerrar o audio. Se o GIF ainda estiver rodando, o app encerra GIF e audio juntos, mas prioriza liberar o bug report em texto primeiro.
+1. Pressione `Ctrl+F1` para iniciar a gravacao.
+2. Se quiser adicionar evidencia visual enquanto continua falando, pressione `Ctrl+Shift+F2` para iniciar o GIF incremental.
+3. Pressione `Ctrl+Shift+F2` novamente para encerrar apenas o GIF e continuar narrando.
+4. Pressione `Ctrl+F1` novamente para encerrar o audio. Se o GIF ainda estiver rodando, o app encerra GIF e audio juntos, mas prioriza liberar o bug report em texto primeiro.
 5. O app transcreve, formata e copia o corpo do bug report; o GIF continua finalizando em segundo plano quando necessario.
 6. Use `Ctrl+"` para colar somente o titulo no campo de assunto e depois `Ctrl+V` para colar o restante.
 
 ### Voz + captura de tela
 
-1. Pressione `Ctrl+Shift+Espaco` para iniciar a captura de tela local.
+1. Pressione `Ctrl+Shift+F3` para iniciar a captura de tela local.
 2. Reproduza o bug, fale normalmente e pressione o scroll do mouse enquanto arrasta se quiser destacar algo com uma seta.
-3. Pressione `Ctrl+Shift+Espaco` novamente para finalizar.
+3. Pressione `Ctrl+Shift+F3` novamente para finalizar.
 4. O app processa a voz, consolida o GIF local e copia o corpo do bug report.
 5. Foque o campo de anexo e use `Ctrl+Shift+V` para colar o ultimo GIF quando precisar.
 
@@ -63,6 +63,7 @@ Variaveis mais importantes:
 - `APP_SCREEN_CAPTURE_HOTKEY`: inicia e encerra a captura de tela local
 - `APP_VOICE_GIF_HOTKEY`: inicia e encerra um GIF incremental enquanto a voz continua gravando
 - `APP_VIDEO_ATTACH_HOTKEY`: cola o ultimo GIF local no campo de anexo em foco
+- `HOTKEY_REFRESH_SECONDS`: recria periodicamente os registros de hotkey para evitar hooks presos apos muitas horas de uso
 - `DEVTOOLS_MCP_ENABLED`: ativa a leitura opcional de contexto tecnico externo
 - `DEVTOOLS_MCP_COMMAND` ou `DEVTOOLS_MCP_CONTEXT_PATH`: apontam para o bridge que fala com Google DevTools MCP
 - `AUTO_STOP_ON_SILENCE`: encerra automaticamente apos silencio

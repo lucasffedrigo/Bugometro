@@ -7,6 +7,39 @@ from collections.abc import Callable
 import keyboard
 
 
+def is_modifier_only_hotkey(hotkey: str) -> bool:
+    parsed = keyboard.parse_hotkey(hotkey)
+    if len(parsed) != 1:
+        return False
+    return all(
+        keyboard.is_modifier(scan_code)
+        for group in parsed[0]
+        for scan_code in group
+    )
+
+
+def reset_keyboard_runtime_state() -> None:
+    # The keyboard package keeps process-wide pressed-key tables. If Windows or
+    # another hook misses a key-up event, those tables can stay dirty until the
+    # app restarts. Clearing them is safe for this app and restores hotkeys.
+    lock = getattr(keyboard, "_pressed_events_lock", None)
+    if lock is None:
+        return
+    with lock:
+        for name in (
+            "_pressed_events",
+            "_physically_pressed_keys",
+            "_logically_pressed_keys",
+        ):
+            value = getattr(keyboard, name, None)
+            if hasattr(value, "clear"):
+                value.clear()
+        listener = getattr(keyboard, "_listener", None)
+        active_modifiers = getattr(listener, "active_modifiers", None)
+        if hasattr(active_modifiers, "clear"):
+            active_modifiers.clear()
+
+
 class GlobalHotkeyManager:
     def __init__(
         self,
@@ -32,30 +65,47 @@ class GlobalHotkeyManager:
         }
 
     def start(self) -> None:
-        if self._handler is not None:
-            return
-        if self.exact:
-            # keyboard.hook(suppress=True) suppresses the entire keyboard stream.
-            # Exact modifier-only hotkeys must observe events without blocking typing.
-            self._handler = keyboard.hook(
-                self._handle_exact_event,
-                suppress=False,
+        with self._lock:
+            if self._handler is not None:
+                return
+            self._reset_exact_state_locked()
+            if self.exact:
+                # keyboard.hook(suppress=True) suppresses the entire keyboard stream.
+                # Exact modifier-only hotkeys must observe events without blocking typing.
+                self._handler = keyboard.hook(
+                    self._handle_exact_event,
+                    suppress=False,
+                )
+                return
+            self._handler = keyboard.add_hotkey(
+                self.hotkey,
+                self._handle_trigger,
+                suppress=self.suppress,
             )
-            return
-        self._handler = keyboard.add_hotkey(
-            self.hotkey,
-            self._handle_trigger,
-            suppress=self.suppress,
-        )
 
     def stop(self) -> None:
-        if self._handler is None:
+        with self._lock:
+            if self._handler is None:
+                return
+            if self.exact:
+                keyboard.unhook(self._handler)
+            else:
+                keyboard.remove_hotkey(self._handler)
+            self._handler = None
+            self._reset_exact_state_locked()
+
+    def refresh(self) -> None:
+        with self._lock:
+            was_started = self._handler is not None
+        if not was_started:
+            self.reset_state()
             return
-        if self.exact:
-            keyboard.unhook(self._handler)
-        else:
-            keyboard.remove_hotkey(self._handler)
-        self._handler = None
+        self.stop()
+        self.start()
+
+    def reset_state(self) -> None:
+        with self._lock:
+            self._reset_exact_state_locked()
 
     def wait(self) -> None:
         keyboard.wait()
@@ -75,24 +125,26 @@ class GlobalHotkeyManager:
             return
         event_type = getattr(event, "event_type", "")
 
-        if event_type == "down":
-            self._pressed_scan_codes.add(scan_code)
-            if self._exact_candidate and scan_code not in self._target_scan_codes:
-                self._exact_candidate = False
-                return
-            if self._matches_exact_target():
-                self._exact_candidate = True
-            return
-
-        if event_type == "up":
-            should_trigger = self._exact_candidate and self._matches_exact_target()
-            self._pressed_scan_codes.discard(scan_code)
+        with self._lock:
             if scan_code not in self._target_scan_codes:
-                self._exact_candidate = False
+                if event_type == "down":
+                    self._exact_candidate = False
                 return
-            if should_trigger:
-                self._exact_candidate = False
-                self._handle_trigger()
+
+            if event_type == "down":
+                self._pressed_scan_codes.add(scan_code)
+                if self._matches_exact_target():
+                    self._exact_candidate = True
+                return
+
+            if event_type == "up":
+                should_trigger = self._exact_candidate and self._matches_exact_target()
+                self._pressed_scan_codes.discard(scan_code)
+                if should_trigger:
+                    self._exact_candidate = False
+
+        if event_type == "up" and should_trigger:
+            self._handle_trigger()
 
     def _matches_exact_target(self) -> bool:
         if not self._target_groups:
@@ -107,3 +159,7 @@ class GlobalHotkeyManager:
         if len(parsed) != 1:
             raise ValueError("Hotkeys exatas devem ter apenas uma combinacao.")
         return tuple(frozenset(group) for group in parsed[0])
+
+    def _reset_exact_state_locked(self) -> None:
+        self._pressed_scan_codes.clear()
+        self._exact_candidate = False

@@ -29,6 +29,7 @@ class AppConfig:
     devtools_mcp_context_path: str
     devtools_mcp_timeout_seconds: float
     hotkey_debounce_ms: int
+    hotkey_refresh_seconds: int
     restart_delay_seconds: int
     sample_rate: int
     channels: int
@@ -68,16 +69,16 @@ class AppConfig:
             last_output_path=root / "last_output.txt",
             last_transcription_path=root / "last_transcription.txt",
             log_file_path=root / "bugometro.log",
-            hotkey=os.getenv("APP_HOTKEY", "ctrl+shift"),
+            hotkey=os.getenv("APP_HOTKEY", "ctrl+f1"),
             restart_hotkey=os.getenv("APP_RESTART_HOTKEY", "ctrl+caps lock"),
             title_paste_hotkey=os.getenv("APP_TITLE_PASTE_HOTKEY", "ctrl+'"),
             screen_capture_hotkey=os.getenv(
                 "APP_SCREEN_CAPTURE_HOTKEY",
-                "ctrl+shift+space",
+                "ctrl+shift+f3",
             ),
             voice_gif_hotkey=os.getenv(
                 "APP_VOICE_GIF_HOTKEY",
-                "ctrl+shift+alt",
+                "ctrl+shift+f2",
             ),
             video_attach_hotkey=os.getenv(
                 "APP_VIDEO_ATTACH_HOTKEY", "ctrl+shift+v"
@@ -106,6 +107,7 @@ class AppConfig:
                 os.getenv("DEVTOOLS_MCP_TIMEOUT_SECONDS", "4")
             ),
             hotkey_debounce_ms=int(os.getenv("HOTKEY_DEBOUNCE_MS", "400")),
+            hotkey_refresh_seconds=int(os.getenv("HOTKEY_REFRESH_SECONDS", "120")),
             restart_delay_seconds=int(os.getenv("RESTART_DELAY_SECONDS", "5")),
             sample_rate=int(os.getenv("AUDIO_SAMPLE_RATE", "16000")),
             channels=int(os.getenv("AUDIO_CHANNELS", "1")),

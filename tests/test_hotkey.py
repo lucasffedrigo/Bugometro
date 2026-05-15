@@ -1,4 +1,4 @@
-from app.hotkey import GlobalHotkeyManager
+from app.hotkey import GlobalHotkeyManager, is_modifier_only_hotkey
 
 
 class FakeKeyboardEvent:
@@ -90,3 +90,40 @@ def test_exact_hotkey_never_suppresses_the_keyboard_stream(monkeypatch) -> None:
     assert registered["suppress"] is False
 
     manager.stop()
+
+
+def test_exact_hotkey_ignores_stale_non_target_keys(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "app.hotkey.keyboard.parse_hotkey",
+        lambda hotkey: (((1,), (2,)),),
+    )
+    calls: list[str] = []
+    manager = GlobalHotkeyManager(
+        hotkey="ctrl+shift",
+        callback=lambda: calls.append("called"),
+        exact=True,
+    )
+
+    manager._handle_exact_event(FakeKeyboardEvent(9, "down"))
+    manager._handle_exact_event(FakeKeyboardEvent(1, "down"))
+    manager._handle_exact_event(FakeKeyboardEvent(2, "down"))
+    manager._handle_exact_event(FakeKeyboardEvent(2, "up"))
+
+    assert calls == ["called"]
+
+
+def test_modifier_only_detection(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "app.hotkey.keyboard.parse_hotkey",
+        lambda hotkey: (((1,), (2,)),),
+    )
+    monkeypatch.setattr("app.hotkey.keyboard.is_modifier", lambda code: code < 10)
+
+    assert is_modifier_only_hotkey("ctrl+shift") is True
+
+    monkeypatch.setattr(
+        "app.hotkey.keyboard.parse_hotkey",
+        lambda hotkey: (((1,), (61,)),),
+    )
+
+    assert is_modifier_only_hotkey("ctrl+f3") is False

@@ -15,7 +15,11 @@ from app.clipboard import ClipboardService
 from app.config import AppConfig
 from app.devtools_mcp_context import DevToolsMcpClient, combine_evidence_contexts
 from app.formatter import Formatter, FormattingError
-from app.hotkey import GlobalHotkeyManager
+from app.hotkey import (
+    GlobalHotkeyManager,
+    is_modifier_only_hotkey,
+    reset_keyboard_runtime_state,
+)
 from app.logger import setup_logging
 from app.native_capture import NativeScreenRecorder, NativeScreenRecordingResult
 from app.output_validator import extract_title
@@ -86,6 +90,7 @@ class BugVoiceReporterApp:
             max_workers=2,
             thread_name_prefix="native-prework",
         )
+        self._hotkey_watchdog_thread: threading.Thread | None = None
 
         self._build_runtime_components()
         self.tray = SystemTrayController(
@@ -172,7 +177,7 @@ class BugVoiceReporterApp:
             callback=self.handle_toggle_hotkey,
             debounce_ms=self.config.hotkey_debounce_ms,
             suppress=True,
-            exact=True,
+            exact=is_modifier_only_hotkey(self.config.hotkey),
         )
         self.restart_hotkey = (
             GlobalHotkeyManager(
@@ -188,14 +193,14 @@ class BugVoiceReporterApp:
             callback=self.handle_native_capture_hotkey,
             debounce_ms=self.config.hotkey_debounce_ms,
             suppress=True,
-            exact=True,
+            exact=is_modifier_only_hotkey(self.config.screen_capture_hotkey),
         )
         self.voice_gif_hotkey = GlobalHotkeyManager(
             hotkey=self.config.voice_gif_hotkey,
             callback=self.handle_voice_gif_hotkey,
             debounce_ms=self.config.hotkey_debounce_ms,
             suppress=True,
-            exact=True,
+            exact=is_modifier_only_hotkey(self.config.voice_gif_hotkey),
         )
         self.title_paste_hotkey = GlobalHotkeyManager(
             hotkey=self.config.title_paste_hotkey,
@@ -234,6 +239,7 @@ class BugVoiceReporterApp:
         self.title_paste_hotkey.start()
         self.tray.start()
         self._started = True
+        self._start_hotkey_watchdog()
         self._set_status_label(AppStatus.IDLE.value)
         self.logger.info(
             "Bugômetro iniciado. Hotkeys toggle=%s restart=%s captura_tela=%s gif_na_voz=%s anexar=%s titulo=%s providers transcrição=%s formatação=%s",
@@ -275,6 +281,7 @@ class BugVoiceReporterApp:
 
         self._cancel_restart_countdown()
         self._cancel_idle_reset()
+        self._stop_hotkey_watchdog()
         self.toggle_hotkey.stop()
         if self.restart_hotkey is not None:
             self.restart_hotkey.stop()
@@ -290,6 +297,52 @@ class BugVoiceReporterApp:
         self._single_instance.release()
         self._restore_signal_handlers()
         threading.Thread(target=self._force_exit_soon, daemon=True).start()
+
+    def _hotkey_managers(self) -> list[GlobalHotkeyManager]:
+        managers = [
+            self.toggle_hotkey,
+            self.screen_capture_hotkey,
+            self.voice_gif_hotkey,
+            self.video_attach_hotkey,
+            self.title_paste_hotkey,
+        ]
+        if self.restart_hotkey is not None:
+            managers.append(self.restart_hotkey)
+        return managers
+
+    def _start_hotkey_watchdog(self) -> None:
+        if self.config.hotkey_refresh_seconds <= 0:
+            return
+        if self._hotkey_watchdog_thread is not None:
+            return
+        self._hotkey_watchdog_thread = threading.Thread(
+            target=self._hotkey_watchdog_loop,
+            name="hotkey-watchdog",
+            daemon=True,
+        )
+        self._hotkey_watchdog_thread.start()
+
+    def _stop_hotkey_watchdog(self) -> None:
+        thread = self._hotkey_watchdog_thread
+        self._hotkey_watchdog_thread = None
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=1)
+
+    def _hotkey_watchdog_loop(self) -> None:
+        interval = max(5, self.config.hotkey_refresh_seconds)
+        while not self._shutdown_event.wait(interval):
+            self._refresh_hotkey_registrations()
+
+    def _refresh_hotkey_registrations(self) -> None:
+        if self._shutdown_event.is_set() or not self._started:
+            return
+        try:
+            reset_keyboard_runtime_state()
+            for manager in self._hotkey_managers():
+                manager.refresh()
+            self.logger.debug("Hotkeys globais atualizadas pelo watchdog.")
+        except Exception:
+            self.logger.exception("Falha ao atualizar hotkeys globais pelo watchdog.")
 
     def open_last_output(self) -> None:
         if not self.config.save_last_output:
