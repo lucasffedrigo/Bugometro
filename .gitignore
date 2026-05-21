@@ -5,3 +5,4 @@ __pycache__/
 bug_voice_reporter.log
 last_output.txt
 last_transcription.txt
+tools/AutoHotkey*.exe

@@ -72,6 +72,14 @@ Variaveis mais importantes:
 
 Os valores padrao e todas as opcoes disponiveis estao em `.env.example`.
 
+## Botao USB opcional
+
+Para usar um botao USB programavel, configure o botao para emitir
+`Ctrl+Alt+Shift+F12`; o launcher `Bugometro.pyw` inicia
+`scripts/button_hotkeys.ahk` automaticamente. O script envia `Ctrl+F1` uma unica
+vez ao soltar o botao, seja em um clique curto ou em um pressionamento de ate
+`5` segundos. Veja o passo a passo em [docs/button-hotkeys.md](docs/button-hotkeys.md).
+
 ## Contexto opcional de DevTools MCP
 
 O app continua funcionando normalmente sem nenhuma integracao adicional. Se voce quiser enriquecer o fluxo de voz + captura local com sinais tecnicos do Google DevTools MCP, habilite:
